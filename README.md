@@ -61,6 +61,29 @@ Open **http://localhost:3000**.
 
 ---
 
+## Deploy to the cloud (use it on your phone, anywhere)
+
+A hosted `https://` URL means the camera works and you can use it on cell data at the
+show — no laptop. You don't need to set any secret on the host: just paste your API key
+in the app's ⚙️ Settings on your phone.
+
+### Render (free)
+1. Push this repo to GitHub (done).
+2. Go to **render.com → New → Blueprint**, connect the repo. It reads `render.yaml`
+   and deploys branch `claude/gun-show-deal-finder-b0xHM` automatically.
+   *(Or New → Web Service: Build `npm install`, Start `npm start`, Health `/api/health`.)*
+3. Open the `https://…onrender.com` URL on your phone → **Add to Home Screen**.
+4. Tap ⚙️ → paste your Anthropic key → Save. Done.
+
+> Render's **free** tier sleeps after inactivity, so the *first* open may take ~30–50s
+> to wake. Open the app a minute before you need it, or use a paid/always-on tier.
+
+### Railway / Fly.io (stays warm)
+A `Dockerfile` is included. Point Railway or Fly at the repo and deploy — same result,
+no cold starts. Set `ANTHROPIC_API_KEY` as a host env var if you prefer a server key.
+
+---
+
 ## How it's built
 
 ```

@@ -1,0 +1,18 @@
+# One-click deploy blueprint for Render (https://render.com).
+# Gives a permanent https URL (camera works) with no secrets required —
+# you paste your Anthropic API key in the app's ⚙️ Settings on your phone.
+services:
+  - type: web
+    name: gunshow-deal-finder
+    runtime: node
+    plan: free
+    branch: claude/gun-show-deal-finder-b0xHM
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Optional: set a server-wide key instead of pasting it in-app.
+      # - key: ANTHROPIC_API_KEY
+      #   sync: false
