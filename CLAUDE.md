@@ -24,6 +24,17 @@ model behavior is validated by the user on their deploy.
 - Tunables (env): `MAX_SEARCHES` (default 4), `THINK_BUDGET` (default 1200). Lower = faster/cheaper.
 - If it's still slow, first suspects: too many web searches, thinking budget, or deep mode left on.
 
+## Cost model
+- **Prompt caching**: `cachedSystem()` wraps every system prompt as a cached content block
+  (`cache_control: ephemeral`), so the big static SOPs bill ~10% on repeat calls. Confirm via the
+  `usage` log line — request #1 shows `cache_creation_input_tokens > 0`, repeats show `cache_read_input_tokens > 0`.
+- **Model routing**: the pricing/quality brain (`FAST_SOP`, Scout/Guru/Specialist, `/api/reviews`)
+  stays on Sonnet (`MODEL`). The cheap/mechanical calls — `/api/identify`, `/api/chat`, `/api/refine` —
+  run on `LIGHT_MODEL` (Haiku, ~3–5× cheaper). Refine also drops extended thinking.
+- Override with env: `LIGHT_MODEL=claude-sonnet-4-6` pins everything back to Sonnet (e.g. if Haiku
+  rejects the web_search tool in chat — chat already degrades gracefully via its no-tools fallback).
+- `createPhase`/`runPhase` accept `{ model, think, maxTokens }` to route per call site.
+
 ## Reading the logs (why this exists)
 Server prints timestamped timing lines (set `LOG=0` to silence). Look for:
 ```

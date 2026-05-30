@@ -11,10 +11,18 @@ app.use(express.static(path.join(__dirname, "public")));
 
 const PORT = process.env.PORT || 3000;
 const MODEL = process.env.MODEL || "claude-sonnet-4-6";
+const LIGHT_MODEL = process.env.LIGHT_MODEL || "claude-haiku-4-5-20251001";
 const WEB_SEARCH_TOOL = process.env.WEB_SEARCH_TOOL || "web_search_20250305";
 const MAX_SEARCHES = Number(process.env.MAX_SEARCHES || 4);
 const THINK_BUDGET = Number(process.env.THINK_BUDGET || 1200);
 const LOG = process.env.LOG !== "0"; // server timing logs on by default
+
+// Wrap a plain system string into a cached content-block array so Anthropic
+// caches the big static SOPs across requests (~90% off repeated input tokens).
+// Harmless if the prefix is too small to cache — it just no-ops.
+function cachedSystem(system) {
+  return [{ type: "text", text: system, cache_control: { type: "ephemeral" } }];
+}
 
 // Lightweight timing logger so we can see where the seconds go (see CLAUDE.md).
 function log(...a) { if (LOG) console.log(new Date().toISOString(), ...a); }
@@ -481,9 +489,9 @@ app.post("/api/identify", async (req, res) => {
         "Identify this item for a price search. Return only the JSON object.",
     });
     const message = await client.messages.create({
-      model: MODEL,
-      max_tokens: 700,
-      system:
+      model: LIGHT_MODEL,
+      max_tokens: 600,
+      system: cachedSystem(
         "You are an expert at identifying anything firearms-related: complete firearms, " +
         "AR-platform parts (uppers, lowers, barrels, BCGs, handguards), 1911/2011 and Glock parts, " +
         "magazines, optics, lights, holsters, suppressors, and AMMUNITION. " +
@@ -495,7 +503,8 @@ app.post("/api/identify", async (req, res) => {
         '{ "name": "best single search string (brand model caliber/spec)", ' +
         '"category": "firearm|part|accessory|optic|magazine|ammo|other", ' +
         '"confidence": "high|medium|low", "upc": string|null, "alternatives": ["other possible matches"], ' +
-        '"observedPrice": number|null, "quantity": number|null, "notes": "what you see, incl. condition cues" }',
+        '"observedPrice": number|null, "quantity": number|null, "notes": "what you see, incl. condition cues" }'
+      ),
       messages: [{ role: "user", content }],
     });
     const json = extractJson(collectText(message));
@@ -507,22 +516,24 @@ app.post("/api/identify", async (req, res) => {
 });
 
 // ---------- non-streaming phase (reliable everywhere) ----------
-async function createPhase(client, { system, userContent, useTools, maxSearches }) {
+async function createPhase(client, { system, userContent, useTools, maxSearches, model = MODEL, think = true, maxTokens }) {
   const base = {
-    model: MODEL,
-    max_tokens: useTools ? 6000 : 4000,
-    system,
+    model,
+    max_tokens: maxTokens || (useTools ? 6000 : 4000),
+    system: cachedSystem(system),
     messages: [{ role: "user", content: userContent }],
-    thinking: { type: "enabled", budget_tokens: THINK_BUDGET },
+    ...(think ? { thinking: { type: "enabled", budget_tokens: THINK_BUDGET } } : {}),
   };
   const withTools = useTools
     ? { ...base, tools: [{ type: WEB_SEARCH_TOOL, name: "web_search", max_uses: maxSearches || MAX_SEARCHES }] }
     : base;
   try {
-    return collectText(await client.messages.create(withTools));
+    const m = await client.messages.create(withTools);
+    if (m.usage) log("usage", model, JSON.stringify(m.usage));
+    return collectText(m);
   } catch (err) {
-    // Drop thinking (and tools) if the account/model rejects them.
-    return collectText(await client.messages.create({ model: MODEL, max_tokens: base.max_tokens, system, messages: base.messages }));
+    // Drop thinking (and tools) if the account/model rejects them. Keep cached system + chosen model.
+    return collectText(await client.messages.create({ model, max_tokens: base.max_tokens, system: base.system, messages: base.messages }));
   }
 }
 
@@ -608,13 +619,13 @@ async function consumeStream(stream, res, phase) {
   return collectText(final);
 }
 
-async function runPhase(client, res, phase, { system, userContent, useTools }) {
+async function runPhase(client, res, phase, { system, userContent, useTools, model = MODEL, think = true, maxTokens }) {
   const base = {
-    model: MODEL,
-    max_tokens: useTools ? 6000 : 4000,
-    system,
+    model,
+    max_tokens: maxTokens || (useTools ? 6000 : 4000),
+    system: cachedSystem(system),
     messages: [{ role: "user", content: userContent }],
-    thinking: { type: "enabled", budget_tokens: THINK_BUDGET },
+    ...(think ? { thinking: { type: "enabled", budget_tokens: THINK_BUDGET } } : {}),
   };
   const withTools = useTools
     ? { ...base, tools: [{ type: WEB_SEARCH_TOOL, name: "web_search", max_uses: MAX_SEARCHES }] }
@@ -623,7 +634,7 @@ async function runPhase(client, res, phase, { system, userContent, useTools }) {
     return await consumeStream(client.messages.stream(withTools), res, phase);
   } catch (err) {
     sse(res, { t: "status", phase, text: "Adjusting capabilities and retrying…" });
-    const fb = { model: MODEL, max_tokens: base.max_tokens, system, messages: base.messages };
+    const fb = { model, max_tokens: base.max_tokens, system: base.system, messages: base.messages };
     return await consumeStream(client.messages.stream(fb), res, phase);
   }
 }
@@ -763,9 +774,9 @@ app.post("/api/chat", async (req, res) => {
   msgs.push({ role: "user", content: userText });
 
   const params = {
-    model: MODEL,
-    max_tokens: 1500,
-    system: CHAT_SOP,
+    model: LIGHT_MODEL,
+    max_tokens: 1200,
+    system: cachedSystem(CHAT_SOP),
     messages: msgs,
   };
   try {
@@ -835,7 +846,7 @@ app.post("/api/refine", async (req, res) => {
 
   try {
     const text = await timed("refine", () =>
-      createPhase(client, { system: REFINE_SOP, userContent: [{ type: "text", text: refinePrompt(current, product, transcript) }], useTools: false })
+      createPhase(client, { system: REFINE_SOP, userContent: [{ type: "text", text: refinePrompt(current, product, transcript) }], useTools: false, model: LIGHT_MODEL, think: false, maxTokens: 800 })
     );
     const out = extractJson(text) || {};
     const price = Number(out.askingPrice);
