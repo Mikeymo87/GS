@@ -21,11 +21,18 @@ smarter buy, and **exactly how much to counter — and why**.
 6. **Used vs. new** — advice on whether a used GunBroker/GunsAmerica copy is the better value.
 7. **History** — recent scans saved on your device so you can compare tables.
 
-### Sources it consults
-GunBroker, GunsAmerica, Guns.com, Brownells, MidwayUSA, Palmetto State Armory,
-GrabAGun, Bud's Gun Shop, Primary Arms, Kygunco, Rainier Arms, EuroOptic, Impact Guns,
-Classic Firearms, Sportsman's Warehouse, Cabela's, Bass Pro, Sportsman's Guide,
-AIM Surplus, Recoil Gunworks, BattleHawk Armory, Family Firearms.
+### Works for anything that shoots or bolts onto something
+Complete firearms, AR-platform parts (uppers, lowers, **barrels**, BCGs, handguards,
+triggers), **1911 / 2011 & Glock** parts, magazines, optics, lights, holsters, and
+**ammunition** (priced per box *and* per round). It detects the category and searches
+the right stores.
+
+### Sources it consults (by category)
+- **Firearms (new + used/auction):** GunBroker, GunsAmerica, Guns.com, PSA, Bud's, GrabAGun, Kygunco, Classic Firearms, Impact Guns, Sportsman's Warehouse, Cabela's, Bass Pro, Sportsman's Guide
+- **Parts & accessories:** Brownells, MidwayUSA, Primary Arms, Rainier Arms, Aero Precision, AIM Surplus, BattleHawk, Wing Tactical, Joe Bob Outfitters, Numrich, **Amazon**, **B&H Photo**
+- **1911 / 2011 & Glock:** Brownells, Wilson Combat, Fusion Firearms, GlockStore, Lone Wolf, Primary Arms, MidwayUSA, Amazon
+- **Optics / lights / accessories:** EuroOptic, OpticsPlanet, B&H Photo, Amazon, Primary Arms, Brownells
+- **Ammunition:** **AmmoSeek**, Lucky Gunner, Target Sports USA, SGAmmo, Ammo.com, PSA, MidwayUSA, Brownells, Bud's
 
 ---
 

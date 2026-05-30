@@ -24,38 +24,41 @@ function clientFor(req) {
   return new Anthropic({ apiKey });
 }
 
-// ----- Reputable sources the model should consult to form an average -----
-// High-volume, multi-brand US retailers + used/auction marketplaces (used vs new).
-const SOURCES = [
-  // Marketplaces & industry leaders (incl. used/auction)
-  { name: "GunBroker", domain: "gunbroker.com", used: true },
-  { name: "GunsAmerica", domain: "gunsamerica.com", used: true },
-  { name: "Guns.com", domain: "guns.com", used: true },
-  { name: "Brownells", domain: "brownells.com" },
-  { name: "MidwayUSA", domain: "midwayusa.com" },
-  { name: "Palmetto State Armory", domain: "palmettostatearmory.com" },
-  // High-volume retailers
-  { name: "GrabAGun", domain: "grabagun.com" },
-  { name: "Bud's Gun Shop", domain: "budsgunshop.com" },
-  { name: "Primary Arms", domain: "primaryarms.com" },
-  { name: "Kentucky Gun Co (Kygunco)", domain: "kygunco.com" },
-  { name: "Rainier Arms", domain: "rainierarms.com" },
-  { name: "EuroOptic", domain: "eurooptic.com" },
-  { name: "Impact Guns", domain: "impactguns.com", used: true },
-  { name: "Classic Firearms", domain: "classicfirearms.com" },
-  // Big-box & outdoor superstores
-  { name: "Sportsman's Warehouse", domain: "sportsmans.com" },
-  { name: "Cabela's", domain: "cabelas.com" },
-  { name: "Bass Pro Shops", domain: "basspro.com" },
-  { name: "Sportsman's Guide", domain: "sportsmansguide.com" },
-  // Enthusiast & high-volume drop shippers
-  { name: "AIM Surplus", domain: "aimsurplus.com" },
-  { name: "Recoil Gunworks", domain: "recoilgunworks.com" },
-  { name: "BattleHawk Armory", domain: "battlehawkarmory.com" },
-  { name: "Family Firearms", domain: "familyfirearms.com" },
-];
-const SOURCE_LIST = SOURCES.map((s) => `${s.name} (${s.domain})`).join(", ");
-const USED_SOURCE_LIST = SOURCES.filter((s) => s.used).map((s) => s.name).join(", ");
+// ----- Reputable sources, grouped by category -----
+// Covers firearms (new + used/auction), parts/accessories, optics, and ammo.
+// The model is told to consult the groups relevant to the detected category.
+const SOURCE_GROUPS = {
+  "Firearms (new + used/auction)": [
+    "GunBroker (gunbroker.com)", "GunsAmerica (gunsamerica.com)", "Guns.com (guns.com)",
+    "Palmetto State Armory (palmettostatearmory.com)", "Bud's Gun Shop (budsgunshop.com)",
+    "GrabAGun (grabagun.com)", "Kentucky Gun Co (kygunco.com)", "Classic Firearms (classicfirearms.com)",
+    "Impact Guns (impactguns.com)", "Sportsman's Warehouse (sportsmans.com)", "Cabela's (cabelas.com)",
+    "Bass Pro Shops (basspro.com)", "Sportsman's Guide (sportsmansguide.com)",
+  ],
+  "Parts & accessories (AR platform, barrels, uppers, builders' parts)": [
+    "Brownells (brownells.com)", "MidwayUSA (midwayusa.com)", "Primary Arms (primaryarms.com)",
+    "Rainier Arms (rainierarms.com)", "Aero Precision (aeroprecisionusa.com)", "Palmetto State Armory",
+    "AIM Surplus (aimsurplus.com)", "BattleHawk Armory (battlehawkarmory.com)",
+    "Wing Tactical (wingtactical.com)", "Joe Bob Outfitters (joeboboutfitters.com)",
+    "Numrich Gun Parts (gunpartscorp.com)", "Amazon (amazon.com)", "B&H Photo (bhphotovideo.com)",
+  ],
+  "1911 / 2011 & Glock parts": [
+    "Brownells", "Wilson Combat (wilsoncombat.com)", "Fusion Firearms (fusionfirearms.com)",
+    "GlockStore (glockstore.com)", "Lone Wolf (lonewolfdist.com)", "Primary Arms", "MidwayUSA", "Amazon",
+  ],
+  "Optics, lights, holsters & accessories": [
+    "EuroOptic (eurooptic.com)", "OpticsPlanet (opticsplanet.com)", "B&H Photo (bhphotovideo.com)",
+    "Amazon (amazon.com)", "Primary Arms", "Brownells", "MidwayUSA",
+  ],
+  "Ammunition": [
+    "AmmoSeek (ammoseek.com)", "Lucky Gunner (luckygunner.com)", "Target Sports USA (targetsportsusa.com)",
+    "SGAmmo (sgammo.com)", "Ammo.com (ammo.com)", "Palmetto State Armory", "MidwayUSA",
+    "Brownells", "Bud's Gun Shop", "Sportsman's Guide",
+  ],
+};
+const SOURCE_REFERENCE = Object.entries(SOURCE_GROUPS)
+  .map(([cat, list]) => `  • ${cat}: ${list.join(", ")}`)
+  .join("\n");
 
 // Robustly pull the last balanced JSON object out of a model response.
 function extractJson(text) {
@@ -63,7 +66,6 @@ function extractJson(text) {
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidates = [];
   if (fence) candidates.push(fence[1]);
-  // also try the raw text as a last resort
   candidates.push(text);
   for (const c of candidates) {
     const start = c.indexOf("{");
@@ -139,12 +141,18 @@ app.post("/api/identify", async (req, res) => {
       model: MODEL,
       max_tokens: 700,
       system:
-        "You are a firearms and shooting-gear identification expert. Identify the item in the photo " +
-        "as precisely as possible (make, model, caliber, variant, notable features). Read any visible " +
-        "tags, price stickers, or markings. Respond ONLY with a JSON object: " +
-        '{ "name": "best single search string (make model caliber)", "category": "...", ' +
+        "You are an expert at identifying anything firearms-related: complete firearms, " +
+        "AR-platform parts (uppers, lowers, barrels, BCGs, handguards), 1911/2011 and Glock parts, " +
+        "magazines, optics, lights, holsters, suppressors, and AMMUNITION. " +
+        "Identify the item in the photo as precisely as possible. For guns: make, model, caliber, " +
+        "generation/variant, barrel length, finish, notable features. For parts: brand, model/part number, " +
+        "fitment (e.g. AR-15 vs AR-10, Glock gen). For ammo: brand, caliber, grain weight, bullet type, " +
+        "and ROUND COUNT on the box. Read any visible tags, price stickers, box labels, or markings. " +
+        "Respond ONLY with a JSON object: " +
+        '{ "name": "best single search string (brand model caliber/spec)", ' +
+        '"category": "firearm|part|accessory|optic|magazine|ammo|other", ' +
         '"confidence": "high|medium|low", "alternatives": ["other possible matches"], ' +
-        '"observedPrice": number|null, "notes": "what you see, incl. condition cues" }',
+        '"observedPrice": number|null, "quantity": number|null, "notes": "what you see, incl. condition cues" }',
       messages: [
         {
           role: "user",
@@ -176,12 +184,22 @@ app.post("/api/analyze", async (req, res) => {
   const hasAsking = Number.isFinite(asking) && asking > 0;
 
   const system = [
-    "You are an expert firearms buyer and appraiser helping a shopper standing at a gun-show table RIGHT NOW.",
-    "Use the web_search tool to look up CURRENT real prices for this exact item from several reputable sources",
-    "(both NEW retailers and USED/auction marketplaces), then form a fair average market price.",
-    `Reputable sources to consult include: ${SOURCE_LIST}.`,
-    `For USED/auction comparisons especially, check: ${USED_SOURCE_LIST}.`,
-    "Search both new and used listings. Prefer recent, in-stock, US prices in USD. Cite the store and a URL for each price you use.",
+    "You are an expert buyer and appraiser helping a shopper standing at a gun-show table RIGHT NOW.",
+    "You price ANYTHING firearms-related: complete firearms, AR-platform parts (uppers, lowers, barrels,",
+    "BCGs, handguards, triggers), 1911/2011 and Glock parts, magazines, optics, lights, holsters, and AMMUNITION.",
+    "First determine the item's category, then use the web_search tool to look up CURRENT real prices for this",
+    "EXACT item from several reputable sources, and form a fair average market price.",
+    "",
+    "Reputable sources, grouped by category (consult the groups relevant to this item):",
+    SOURCE_REFERENCE,
+    "",
+    "For FIREARMS: search both NEW retailers and USED/auction marketplaces (GunBroker, GunsAmerica, Guns.com) so you can advise used-vs-new.",
+    "For PARTS/ACCESSORIES/OPTICS: include the parts/optics retailers above plus Amazon and B&H Photo where they carry it; match exact brand + model/part number + fitment.",
+    "For AMMUNITION: use AmmoSeek and the ammo retailers; NORMALIZE everything to the SAME quantity as the table item (e.g. per box of 50/20, or per 1000-round case), and also state the price PER ROUND in market.note. Compare apples-to-apples on grain weight and bullet type.",
+    "Prefer recent, in-stock, US prices in USD. Cite the store and a URL for each price you use.",
+    "",
+    "If a PHOTO is provided, use it to confirm the EXACT variant/configuration (generation, finish, barrel length,",
+    "rail/optic cut, included accessories, round count) and match your listings to what is actually pictured.",
     "",
     "Form a FAIR 'good price' as the average of the legitimate prices you find (drop obvious outliers / out-of-stock placeholders).",
     "Then rate the table's asking price against that fair price using these bands:",
@@ -191,18 +209,20 @@ app.post("/api/analyze", async (req, res) => {
     "  bad   = asking is > 5% ABOVE fair average -> overpriced",
     "If no asking price is given, set deal.rating to \"unknown\" and still report the market range.",
     "Give specific, practical counter-offer advice: a target price, a walk-away price, and a short script the shopper can say,",
-    "with the reasoning (cite the comparable prices). Also advise whether a USED version is the smarter buy and why.",
+    "with the reasoning (cite the comparable prices). For firearms, advise whether a USED version is the smarter buy and why;",
+    "for parts/ammo, note if buying online (even after shipping/tax/transfer) beats the table price.",
     "",
     "Respond with EXACTLY ONE JSON object (no prose before/after), matching this schema:",
     `{
-  "product": { "name": string, "category": string, "summary": string, "specs": [string], "msrp": number|null },
-  "market": { "currency": "USD", "newLow": number|null, "newHigh": number|null, "usedLow": number|null, "usedHigh": number|null, "fairPrice": number|null, "sampleSize": number },
+  "product": { "name": string, "category": "firearm|part|accessory|optic|magazine|ammo|other", "summary": string, "specs": [string], "msrp": number|null },
+  "market": { "currency": "USD", "newLow": number|null, "newHigh": number|null, "usedLow": number|null, "usedHigh": number|null, "fairPrice": number|null, "sampleSize": number, "note": string },
   "sources": [ { "store": string, "title": string, "price": number, "condition": "new"|"used", "url": string, "inStock": boolean|null, "note": string } ],
   "deal": { "rating": "great"|"good"|"ok"|"bad"|"unknown", "score": number, "headline": string, "reasoning": string, "askingPrice": number|null, "vsFairPct": number|null },
   "counterOffer": { "shouldCounter": boolean, "targetPrice": number|null, "walkAwayPrice": number|null, "script": string, "reasoning": string },
   "usedVsNew": string,
   "redFlags": [string]
 }`,
+    "All prices (market + sources) must be for the SAME quantity/unit as the table item. Put per-round/per-unit math in market.note.",
     "score is 0-100 where higher = better deal for the buyer. Include 6-12 sources when possible, sorted cheapest first.",
   ].join("\n");
 
@@ -211,7 +231,7 @@ app.post("/api/analyze", async (req, res) => {
     hasAsking ? `Table asking price: $${asking}` : "Table asking price: (not provided)",
     condition ? `Condition at the table: ${condition}` : null,
     location ? `Location: ${location}` : null,
-    "Search reputable stores for current new AND used prices, form the fair average, rate this deal, and give counter-offer advice. Return only the JSON object.",
+    "Determine the category, search reputable stores for current prices, form the fair average, rate this deal, and give counter-offer advice. Return only the JSON object.",
   ].filter(Boolean).join("\n");
 
   const content = [];

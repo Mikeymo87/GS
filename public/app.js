@@ -228,6 +228,7 @@ function renderResults(d, payload) {
       <div class="psum fair"><small>Fair avg</small><b>${money(market.fairPrice)}</b></div>
       <div class="psum"><small>Used</small><b>${money(market.usedLow)}${market.usedHigh ? "–" + money(market.usedHigh).replace("$", "") : ""}</b></div>
     </div>
+    ${market.note ? `<p class="muted-p" style="margin-top:8px">${esc(market.note)}</p>` : ""}
     ${
       payload.askingPrice
         ? `<p class="muted-p">Their price <b>${money(payload.askingPrice)}</b>${
