@@ -233,6 +233,38 @@ const FAST_SOP = [
   "Include 5-10 real sources with direct links, cheapest first. score 0-100 (higher = better buy). Keep it tight and useful.",
 ].join("\n");
 
+// ============ REFINE: pull new item details out of a chat transcript ============
+const REFINE_SOP = [
+  "# ROLE",
+  "You are a fast extraction utility. Input: the item currently being analyzed plus a chat transcript.",
+  "Your ONLY job is to pull out NEW concrete facts the user revealed that should change a price/deal",
+  "search. NO web search, NO pricing, NO advice — extraction only.",
+  "",
+  "# RULES",
+  "- Compare what the user said against the CURRENT name/condition/askingPrice. If nothing materially new,",
+  "  return changed:false and echo the current values.",
+  "- Update 'name' ONLY when a spec changes the product identity (e.g. 'Gen 4 not Gen 5', 'threaded barrel',",
+  "  '16in not 14.5'). Keep the existing brand/model — refine it, don't rewrite from scratch.",
+  "- Map condition cues ('some holster wear', 'like new', 'NIB') to a short condition phrase.",
+  "- Update 'askingPrice' ONLY when the user states a new number they could actually pay (e.g. 'they'll do",
+  "  $420 cash'); otherwise keep the current value.",
+  "- 'details': a compact semicolon-joined string of extras/specifics that don't fit name/condition/price",
+  "  (e.g. 'threaded barrel; +2 mags; holster; night sights; light wear'). CUMULATIVE — fold in any prior details given.",
+  "- 'changes': 2-5 short human-readable strings, one per change (e.g. 'Generation: Gen 5 → Gen 4',",
+  "  'Asking: $480 → $420 cash', 'Added: threaded barrel, 3 mags, holster').",
+  "",
+  "# OUTPUT — respond with EXACTLY ONE JSON object (no prose):",
+  `{
+  "changed": true,
+  "name": "Glock 19 Gen 4 9mm threaded barrel",
+  "condition": "used - good",
+  "askingPrice": 420,
+  "details": "threaded barrel; +2 mags; holster; light holster wear",
+  "changes": ["Generation: Gen 5 → Gen 4", "Asking: $480 → $420 cash", "Added: threaded barrel, 3 mags, holster"]
+}`,
+  "If nothing new: { \"changed\": false, \"name\": <current>, \"condition\": <current>, \"askingPrice\": <current>, \"details\": <current>, \"changes\": [] }",
+].join("\n");
+
 // ----- helpers -----
 function extractJson(text) {
   if (!text) return null;
@@ -325,7 +357,7 @@ function sanitizeReviewSources(arr) {
 
 // ----- shared prompt builders (used by both streaming and non-streaming) -----
 function buildContext(body) {
-  const { name, askingPrice, condition, location, upc, salesTaxPct, fflFee } = body || {};
+  const { name, askingPrice, condition, location, upc, salesTaxPct, fflFee, details } = body || {};
   const asking = Number(askingPrice);
   const hasAsking = Number.isFinite(asking) && asking > 0;
   const tax = Number(salesTaxPct);
@@ -335,6 +367,7 @@ function buildContext(body) {
     upc ? `UPC/barcode: ${upc}` : null,
     hasAsking ? `Table asking price: $${asking}` : "Table asking price: (not provided)",
     condition ? `Condition at the table: ${condition}` : null,
+    (details && String(details).trim()) ? `Extra details from the buyer (treat as ground truth): ${String(details).trim()}` : null,
     location ? `Location: ${location}` : null,
     Number.isFinite(tax) && tax > 0 ? `Buyer's sales tax: ${tax}%` : null,
     Number.isFinite(ffl) && ffl >= 0 ? `Buyer's FFL transfer fee: $${ffl}` : null,
@@ -356,6 +389,21 @@ function guruPrompt(context, scout) {
     "",
     "Research real-world quality, reviews, Reddit/forum consensus, and known issues. Is this quality kit or chinesium? Return only the JSON object.",
   ].join("\n");
+}
+
+function refinePrompt(current, product, transcript) {
+  return [
+    "CURRENT ITEM (known values):",
+    "```json",
+    JSON.stringify(current, null, 2),
+    "```",
+    product ? `CURRENT ANALYSIS (for context): ${JSON.stringify({ product })}` : "",
+    "",
+    "CONVERSATION:",
+    transcript,
+    "",
+    "Extract any refinements per your SOP. Return only the JSON object.",
+  ].filter(Boolean).join("\n");
 }
 
 function specialistPrompt(context, scout, guru, includeGuru) {
@@ -758,10 +806,59 @@ app.post("/api/reviews", async (req, res) => {
   }
 });
 
+// ---------- /api/refine : extract new item details from chat (no web search) ----------
+app.post("/api/refine", async (req, res) => {
+  const client = clientFor(req);
+  if (!client) return res.status(401).json({ error: "missing_key" });
+
+  const { name, condition, askingPrice, details, product, history } = req.body || {};
+  const itemName = name || (product && product.name);
+  if (!itemName || !Array.isArray(history) || !history.length) {
+    return res.status(400).json({ error: "need_context" });
+  }
+  const t0 = Date.now();
+  log(`POST /api/refine item="${itemName}"`);
+
+  // Reuse the same transcript shaping as /api/chat.
+  const transcript = history
+    .slice(-8)
+    .filter((h) => h && (h.role === "user" || h.role === "assistant") && h.content)
+    .map((h) => `${h.role === "user" ? "USER" : "ASSISTANT"}: ${String(h.content).slice(0, 4000)}`)
+    .join("\n");
+
+  const current = {
+    name: itemName,
+    condition: condition || null,
+    askingPrice: Number.isFinite(Number(askingPrice)) && Number(askingPrice) > 0 ? Number(askingPrice) : null,
+    details: details || "",
+  };
+
+  try {
+    const text = await timed("refine", () =>
+      createPhase(client, { system: REFINE_SOP, userContent: [{ type: "text", text: refinePrompt(current, product, transcript) }], useTools: false })
+    );
+    const out = extractJson(text) || {};
+    const price = Number(out.askingPrice);
+    const changes = Array.isArray(out.changes) ? out.changes.filter((c) => c && typeof c === "string").slice(0, 6) : [];
+    const result = {
+      changed: !!out.changed && changes.length > 0,
+      name: (typeof out.name === "string" && out.name.trim()) ? out.name.trim() : current.name,
+      condition: (typeof out.condition === "string" && out.condition.trim()) ? out.condition.trim() : current.condition,
+      askingPrice: Number.isFinite(price) && price > 0 ? price : current.askingPrice,
+      details: (typeof out.details === "string") ? out.details.trim() : current.details,
+      changes,
+    };
+    log(`POST /api/refine done in ${((Date.now() - t0) / 1000).toFixed(1)}s, changed=${result.changed}`);
+    res.json(result);
+  } catch (err) {
+    log(`POST /api/refine ERROR in ${((Date.now() - t0) / 1000).toFixed(1)}s:`, String(err?.message || err));
+    res.status(err?.status || 500).json({ error: "refine_failed", detail: String(err?.message || err) });
+  }
+});
+
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, model: MODEL, hasServerKey: !!process.env.ANTHROPIC_API_KEY });
 });
-
 app.listen(PORT, () => {
   console.log(`Gun Show Deal Finder running on http://localhost:${PORT}`);
 });

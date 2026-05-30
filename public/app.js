@@ -15,6 +15,9 @@ let identifying = false;
 let runController = null;
 let lastPayload = {};
 let lastResult = null;
+let pendingDetails = null;   // extra details pulled from chat, applied to the next analyze()
+let refining = false;
+let lastNudgeAt = 0;
 
 /* ---------------- image helpers ---------------- */
 function loadImg(src) {
@@ -176,6 +179,7 @@ function cacheKey(p) {
     (p.name || "").trim().toLowerCase(),
     p.askingPrice || "",
     (p.condition || "").toLowerCase(),
+    (p.details || "").trim().toLowerCase(),
     p.deep ? "deep" : "fast",
   ].join("|");
 }
@@ -348,6 +352,7 @@ async function analyze() {
     image: selectedImage || null,
     upc: scannedUPC || null,
     deep: $("deepToggle").checked,
+    details: pendingDetails || null,
     salesTaxPct: localStorage.getItem(TAX_STORE) || null,
     fflFee: localStorage.getItem(FFL_STORE) || null,
   };
@@ -740,6 +745,124 @@ function openNegotiate() {
   sendChat(`Help me negotiate this${ask} What should I open with, what's my walk-away, and exactly what do I say?`);
 }
 
+/* ---------------- refine search from chat ---------------- */
+// Show/hide the persistent "Update search" button as item focus changes.
+function updateRefineBar() {
+  const bar = $("chatRefineBar");
+  if (!bar) return;
+  const focused = !!(lastResult && lastResult.product);
+  if (!focused) { bar.classList.add("hidden"); bar.innerHTML = ""; return; }
+  if (!bar.querySelector("#refineBtn") && !bar.querySelector(".refine-card")) {
+    bar.innerHTML = `<button id="refineBtn" class="ghost-btn small refine-btn">✏️ Update search with new details</button>`;
+    bar.querySelector("#refineBtn").addEventListener("click", () => requestRefine());
+  }
+  bar.classList.remove("hidden");
+}
+
+// Cheap client-side heuristic: does this message look like it adds a new item detail?
+function looksLikeNewDetail(text) {
+  const t = String(text || "");
+  return (
+    /\bgen\s?\d/i.test(t) ||
+    /\b(mod|model)\s?\d/i.test(t) ||
+    /threaded|barrel|\d+(\.\d+)?\s?(in|")/i.test(t) ||
+    /\b(\d+\s*)?(mag|magazine|holster|case|optic|red ?dot|sight|ammo|box|round)s?\b/i.test(t) ||
+    /\b(wear|scratch|holster wear|like new|new in box|nib|mint|refinish|reblue|blem)\b/i.test(t) ||
+    /\$\s?\d+|\b\d{2,4}\s?(cash|out the door|otd|firm)\b|they('| wi)ll do\b/i.test(t)
+  );
+}
+
+// Surface a stronger nudge once the heuristic fires (debounced).
+function showRefineNudge() {
+  const bar = $("chatRefineBar");
+  if (!bar || refining) return;
+  if (Date.now() - lastNudgeAt < 8000) return; // debounce
+  lastNudgeAt = Date.now();
+  const btn = bar.querySelector("#refineBtn");
+  if (btn) { btn.classList.add("nudge"); btn.innerHTML = "✨ New details — update the deal check?"; }
+}
+
+async function requestRefine() {
+  if (!lastResult || !lastResult.product || refining) return;
+  refining = true;
+  const bar = $("chatRefineBar");
+  const btn = bar && bar.querySelector("#refineBtn");
+  if (btn) { btn.disabled = true; btn.classList.remove("nudge"); btn.innerHTML = "Reading the details…"; }
+  try {
+    const resp = await fetch("/api/refine", {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({
+        name: lastPayload.name || lastResult.product.name,
+        condition: lastPayload.condition || null,
+        askingPrice: lastPayload.askingPrice || null,
+        details: lastPayload.details || pendingDetails || "",
+        product: lastResult.product,
+        history: chatHistory.map((m) => ({ role: m.role, content: m.role === "assistant" ? (m._plain || m.content) : m.content })),
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) {
+      if (data.error === "missing_key" || resp.status === 401) openSettings();
+      else toast("Couldn't read the details");
+      refining = false; updateRefineBar(); return;
+    }
+    refining = false;
+    if (!data.changed || !data.changes.length) {
+      toast("No new details to add");
+      updateRefineBar();
+      return;
+    }
+    showRefineConfirm(data);
+  } catch {
+    toast("Couldn't reach the server");
+    refining = false; updateRefineBar();
+  }
+}
+
+function showRefineConfirm(data) {
+  const bar = $("chatRefineBar");
+  if (!bar) return;
+  bar.classList.remove("hidden");
+  bar.innerHTML =
+    `<div class="refine-card">
+      <div class="refine-title">Update the deal check with:</div>
+      <ul class="refine-changes">${data.changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>
+      <div class="refine-actions">
+        <button class="primary-btn small" id="refineConfirm"><span class="btn-label">Update &amp; re-run</span></button>
+        <button class="ghost-btn small" id="refineCancel">Cancel</button>
+      </div>
+    </div>`;
+  bar.querySelector("#refineConfirm").addEventListener("click", () => applyRefine(data));
+  bar.querySelector("#refineCancel").addEventListener("click", () => { updateRefineBar(); });
+}
+
+// Match a freeform condition string to one of the fixed <select> options if possible.
+function setConditionValue(s) {
+  if (!s) return;
+  const sel = $("conditionInput");
+  const want = String(s).toLowerCase();
+  for (const opt of sel.options) {
+    if (opt.value && (opt.value.toLowerCase() === want || want.includes(opt.value.toLowerCase()))) {
+      sel.value = opt.value;
+      return;
+    }
+  }
+  // no exact match — leave the select; the nuance still rides along in details
+}
+
+function applyRefine(data) {
+  if (data.name) { $("nameInput").value = data.name; toggleClearName(); }
+  if (data.askingPrice != null) $("priceInput").value = data.askingPrice;
+  if (data.condition) setConditionValue(data.condition);
+  pendingDetails = data.details || pendingDetails || null;
+  const bar = $("chatRefineBar");
+  if (bar) { bar.innerHTML = ""; bar.classList.add("hidden"); }
+  addBubble("bot", "Updated the deal check with your new details — see the refreshed report above.");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  analyze(); // finishRun() will re-render, re-cache, and resync chat scope
+}
+
 /* ---------------- share ---------------- */
 function shareResult() {
   const d = lastResult || {};
@@ -784,6 +907,7 @@ function saveHistory(d) {
     query: lastPayload.name || "",
     askingPrice: lastPayload.askingPrice || null,
     condition: lastPayload.condition || null,
+    details: lastPayload.details || null,
     deep: !!lastPayload.deep,
     at: Date.now(),
   });
@@ -821,6 +945,7 @@ function reloadHistory(h) {
   $("priceInput").value = h.askingPrice || "";
   $("conditionInput").value = h.condition || "";
   $("deepToggle").checked = !!h.deep;
+  pendingDetails = h.details || null;
   toggleClearName();
   window.scrollTo({ top: 0, behavior: "smooth" });
   analyze();
@@ -877,7 +1002,7 @@ $("saveKey").addEventListener("click", () => {
 });
 $("clearHistory").addEventListener("click", () => { localStorage.removeItem(HIST_STORE); renderHistory(); });
 $("nameInput").addEventListener("keydown", (e) => { if (e.key === "Enter") analyze(); });
-$("nameInput").addEventListener("input", toggleClearName);
+$("nameInput").addEventListener("input", () => { toggleClearName(); pendingDetails = null; });
 $("clearName").addEventListener("click", () => { $("nameInput").value = ""; toggleClearName(); $("nameInput").focus(); });
 $("deepToggle").addEventListener("change", (e) => localStorage.setItem(DEEP_STORE, e.target.checked ? "1" : "0"));
 
@@ -934,6 +1059,7 @@ function setChatScope() {
   const focused = !!(lastResult && lastResult.product);
   const name = focused ? (lastResult.product.name || "this item") : null;
   $("chatScope").textContent = focused ? `Focused on: ${name}` : "All your searches";
+  updateRefineBar();
 }
 
 function chatChips() {
@@ -1011,6 +1137,8 @@ async function sendChat(text) {
       const safe = sanitizeHtml(data.html);
       const b = addBubble("bot", safe || "(no answer)");
       chatHistory.push({ role: "assistant", content: safe, _plain: b.textContent });
+      // If the user's message looks like it added a new item detail, nudge to refine.
+      if (item && looksLikeNewDetail(text)) showRefineNudge();
     }
   } catch (e) {
     typing.remove();

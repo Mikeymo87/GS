@@ -42,6 +42,7 @@ proxy/browser idle timeout; the client auto-falls back from streaming to `/api/a
   fallback when SSE is blocked. `{ name, image, upc, askingPrice, condition, deep, salesTaxPct, fflFee }`.
 - `POST /api/analyze/stream` — SSE live view (reasoning + searches). Same body. Heartbeat every 10s.
 - `POST /api/chat` — `{ message, history, item, recentSearches }` → `{ html }` (clean HTML, sanitized client-side).
+- `POST /api/refine` — `{ name, condition, askingPrice, details, product, history }` → `{ changed, name, condition, askingPrice, details, changes[] }`. Cheap extraction (no web search) that pulls new item details out of the chat so the user can re-run the search refined. Client threads `details` through `analyze()` → `buildContext()` and into `cacheKey`.
 - `GET /api/health` — `{ ok, model, hasServerKey }`.
 
 Smoke test:
