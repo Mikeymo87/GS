@@ -107,8 +107,11 @@ Dockerfile             Railway/Fly/any Docker host
 ```
 
 - **Model:** `claude-sonnet-4-6` with extended **thinking** + the Anthropic **web search** tool.
-  Two specialized agents run in sequence, each with its own structured SOP (see `SCOUT_SOP` and
-  `SPECIALIST_SOP` in `server.js`). If thinking/search isn't enabled on a key, it falls back gracefully.
+  Three specialized agents run in sequence, each with its own structured SOP (`SCOUT_SOP`, `GURU_SOP`,
+  `SPECIALIST_SOP` in `server.js`). The Gun Guru is optional (UI toggle). Falls back gracefully if a key
+  lacks thinking/search.
+- **Live barcode scanner**: real-time camera scan via `BarcodeDetector` (Android/desktop) with a ZXing
+  fallback for iOS Safari; vision-reads the label if the camera is blocked.
 - Reasoning, search queries, and result counts stream to the browser over **Server-Sent Events**.
 - Photos are resized client-side (≤1280px JPEG) before upload. No database — history lives in the browser.
 

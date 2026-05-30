@@ -85,6 +85,87 @@ function clearImage() {
   $("barcodeInput").value = "";
 }
 
+/* ---------------- live barcode scanner ---------------- */
+let scanStream = null, scanTimer = null, scanReader = null, scanControls = null, scanHandled = false;
+
+async function loadZXing() {
+  if (window.ZXingBrowser) return window.ZXingBrowser;
+  await new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/zxing-browser.min.js";
+    s.onload = res;
+    s.onerror = rej;
+    document.head.appendChild(s);
+  });
+  return window.ZXingBrowser;
+}
+
+async function openScanner() {
+  hideFormError();
+  scanHandled = false;
+  $("scanner").classList.remove("hidden");
+  const video = $("scanVideo");
+  try {
+    if ("BarcodeDetector" in window) {
+      // Native scanner (Android Chrome, desktop Chrome/Edge)
+      scanStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } }, audio: false,
+      });
+      video.srcObject = scanStream;
+      await video.play();
+      const fmts = await window.BarcodeDetector.getSupportedFormats?.().catch(() => null);
+      const det = new window.BarcodeDetector(fmts ? { formats: fmts } : undefined);
+      scanTimer = setInterval(async () => {
+        try {
+          const codes = await det.detect(video);
+          if (codes && codes[0]) onScanned(codes[0].rawValue, video);
+        } catch {}
+      }, 320);
+    } else {
+      // ZXing fallback (iOS Safari and anything without BarcodeDetector)
+      const Z = await loadZXing();
+      scanReader = new Z.BrowserMultiFormatReader();
+      scanControls = await scanReader.decodeFromVideoDevice(undefined, video, (res) => {
+        if (res) onScanned(res.getText(), video);
+      });
+    }
+  } catch (e) {
+    closeScanner();
+    // Camera blocked/unavailable → fall back to snapping a photo of the barcode
+    $("idStatus").textContent = "Camera unavailable — snap the barcode instead";
+    $("barcodeInput").click();
+  }
+}
+
+function onScanned(code, video) {
+  if (scanHandled || !code) return;
+  scanHandled = true;
+  if (navigator.vibrate) navigator.vibrate(90);
+  try {
+    const c = document.createElement("canvas");
+    c.width = video.videoWidth || 640;
+    c.height = video.videoHeight || 480;
+    c.getContext("2d").drawImage(video, 0, 0);
+    selectedImage = c.toDataURL("image/jpeg", 0.8);
+    $("thumb").src = selectedImage;
+    $("thumbWrap").classList.remove("hidden");
+  } catch {}
+  scannedUPC = code;
+  closeScanner();
+  $("idStatus").textContent = `🔖 UPC ${code} — identifying…`;
+  identify();
+}
+
+function closeScanner() {
+  $("scanner").classList.add("hidden");
+  if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
+  if (scanControls) { try { scanControls.stop(); } catch {} scanControls = null; }
+  if (scanReader) { try { scanReader.reset(); } catch {} scanReader = null; }
+  if (scanStream) { scanStream.getTracks().forEach((t) => t.stop()); scanStream = null; }
+  const v = $("scanVideo");
+  if (v) v.srcObject = null;
+}
+
 /* ---------------- API ---------------- */
 function apiHeaders() {
   const h = { "Content-Type": "application/json" };
@@ -595,6 +676,8 @@ function hideFormError() { $("formError").classList.add("hidden"); }
 $("cameraInput").addEventListener("change", (e) => onImageChosen(e.target.files[0]));
 $("barcodeInput").addEventListener("change", (e) => onImageChosen(e.target.files[0], { barcode: true }));
 $("galleryInput").addEventListener("change", (e) => onImageChosen(e.target.files[0]));
+$("scanBtn").addEventListener("click", openScanner);
+$("scanClose").addEventListener("click", closeScanner);
 $("clearThumb").addEventListener("click", clearImage);
 $("analyzeBtn").addEventListener("click", analyze);
 $("cancelRun").addEventListener("click", stopRun);

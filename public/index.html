@@ -36,11 +36,11 @@
           <span>Photo</span>
           <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden />
         </label>
-        <label class="capture-btn" for="barcodeInput">
+        <button type="button" class="capture-btn" id="scanBtn">
           <span class="capture-emoji">🔖</span>
-          <span>Barcode</span>
-          <input id="barcodeInput" type="file" accept="image/*" capture="environment" hidden />
-        </label>
+          <span>Scan</span>
+        </button>
+        <input id="barcodeInput" type="file" accept="image/*" capture="environment" hidden />
         <label class="capture-btn" for="galleryInput">
           <span class="capture-emoji">🖼️</span>
           <span>Upload</span>
@@ -153,6 +153,14 @@
       </div>
       <p class="about">Three-agent pipeline on Claude Sonnet 4.6 with live web search: <b>The Scout</b> prices it with verifiable links, <b>The Gun Guru</b> judges quality &amp; reviews, and the <b>Deal Specialist</b> calls the deal &amp; counter. Research only — verify prices and follow all laws before buying.</p>
     </div>
+  </div>
+
+  <!-- LIVE BARCODE SCANNER -->
+  <div id="scanner" class="scanner hidden">
+    <video id="scanVideo" playsinline muted autoplay></video>
+    <div class="scan-frame"><span class="scan-line"></span></div>
+    <div class="scan-hint">Point the camera at the barcode</div>
+    <button id="scanClose" class="scan-close" aria-label="Close scanner">✕</button>
   </div>
 
   <div id="toast" class="toast hidden"></div>
