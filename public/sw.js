@@ -1,6 +1,6 @@
 // Simple app-shell cache so the UI loads instantly and works offline.
 // API calls are always network-only (never cached).
-const CACHE = "gsdf-v4";
+const CACHE = "gsdf-v5";
 const SHELL = ["/", "/index.html", "/styles.css", "/app.js", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (e) => {

@@ -124,11 +124,18 @@ Dockerfile             Railway/Fly/any Docker host
   result shows the true table-cash price vs. cheapest-online + shipping + tax (+ FFL for firearms).
 - Photos are resized client-side (≤1280px JPEG) before upload. No database — history lives in the browser.
 
-### Cost per lookup (estimate)
-Roughly **$0.40–0.75** for a full three-agent run with the Gun Guru on (three model calls + thinking +
-web searches at ~$0.01 each). Turning the Gun Guru **off** drops it to ~**$0.20–0.45** (two agents).
-Typing the name instead of using a photo is cheaper.
-Lower `MAX_SEARCHES` / `THINK_BUDGET` to reduce cost.
+### Speed & cost (estimate)
+- **Fast mode (default):** one agent does identify + price + rate + counter in a single call.
+  ~**15–30s** and ~**$0.10–0.20** per lookup. This is what most searches use.
+- **Deep dive (toggle):** 3 agents (Scout + Gun Guru reviews + Specialist). ~**40–70s** and
+  ~**$0.35–0.65**. In the non-streaming path the Scout and Gun Guru run **in parallel** to save time.
+- Repeat searches are served from the on-device **cache for free**. Lower `MAX_SEARCHES` /
+  `THINK_BUDGET` to go faster/cheaper.
+
+### Logs / debugging
+The server prints timestamped timing lines for every analysis (which phase ran, how long, source
+count, and any failure). Watch them in your host's deploy logs. Set `LOG=0` to silence. See
+`CLAUDE.md` for how to read them and the full speed model.
 
 ### Config (env)
 | Var | Default | Notes |
@@ -137,8 +144,9 @@ Lower `MAX_SEARCHES` / `THINK_BUDGET` to reduce cost.
 | `PORT` | `3000` | |
 | `MODEL` | `claude-sonnet-4-6` | |
 | `WEB_SEARCH_TOOL` | `web_search_20250305` | Anthropic web search tool version |
-| `MAX_SEARCHES` | `6` | Max web searches per agent run |
-| `THINK_BUDGET` | `2500` | Extended-thinking token budget per agent |
+| `MAX_SEARCHES` | `4` | Max web searches per agent run |
+| `THINK_BUDGET` | `1200` | Extended-thinking token budget per agent |
+| `LOG` | `1` | Server timing logs (`0` to disable) |
 
 ---
 

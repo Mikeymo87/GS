@@ -362,8 +362,11 @@ async function analyze() {
     return;
   }
 
-  // hide the Guru lane if quality mode is off
+  // Fast mode = a single agent lane; Deep mode = all three.
   $("agent-guru").classList.toggle("hidden", !payload.deep);
+  $("agent-specialist").classList.toggle("hidden", !payload.deep);
+  $("agent-scout").querySelector(".agent-meta b").textContent = payload.deep ? "The Scout" : "Deal Finder";
+  $("agent-scout").querySelector(".agent-meta small").textContent = payload.deep ? "Finds real prices" : "Price + verdict";
 
   $("analyzeBtn").disabled = true;
   $("results").classList.add("hidden");
@@ -421,10 +424,9 @@ async function analyze() {
 async function analyzeFallback(payload, quiet) {
   try {
     if (!quiet) addLine("status", `<span class="ic">⚙️</span><span>Live view unavailable — finishing the analysis…</span>`);
-    document.querySelector(".activity-title").textContent = "Working… (this can take ~30–60s)";
-    ["scout", "guru", "specialist"].forEach((p) => {
-      if (p !== "guru" || payload.deep) setAgent(p, "active");
-    });
+    document.querySelector(".activity-title").textContent = payload.deep ? "Working… (~30–60s)" : "Working… (~15–30s)";
+    const lanes = payload.deep ? ["scout", "guru", "specialist"] : ["scout"];
+    lanes.forEach((p) => setAgent(p, "active"));
     const resp = await fetch("/api/analyze", {
       method: "POST",
       headers: apiHeaders(),
@@ -441,7 +443,7 @@ async function analyzeFallback(payload, quiet) {
       }
       return;
     }
-    ["scout", "guru", "specialist"].forEach((p) => setAgent(p, "done"));
+    (payload.deep ? ["scout", "guru", "specialist"] : ["scout"]).forEach((p) => setAgent(p, "done"));
     finishRun(data);
   } catch (e) {
     stopRun();
@@ -839,8 +841,8 @@ $("deepToggle").addEventListener("change", (e) => localStorage.setItem(DEEP_STOR
 
 function toggleClearName() { $("clearName").classList.toggle("hidden", !$("nameInput").value); }
 
-// restore deep-mode preference
-if (localStorage.getItem(DEEP_STORE) === "0") $("deepToggle").checked = false;
+// restore deep-mode preference (Fast is the default; only restore if user turned Deep on)
+if (localStorage.getItem(DEEP_STORE) === "1") $("deepToggle").checked = true;
 toggleClearName();
 renderHistory();
 initChat();

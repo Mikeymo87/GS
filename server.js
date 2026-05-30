@@ -12,8 +12,24 @@ app.use(express.static(path.join(__dirname, "public")));
 const PORT = process.env.PORT || 3000;
 const MODEL = process.env.MODEL || "claude-sonnet-4-6";
 const WEB_SEARCH_TOOL = process.env.WEB_SEARCH_TOOL || "web_search_20250305";
-const MAX_SEARCHES = Number(process.env.MAX_SEARCHES || 6);
-const THINK_BUDGET = Number(process.env.THINK_BUDGET || 2500);
+const MAX_SEARCHES = Number(process.env.MAX_SEARCHES || 4);
+const THINK_BUDGET = Number(process.env.THINK_BUDGET || 1200);
+const LOG = process.env.LOG !== "0"; // server timing logs on by default
+
+// Lightweight timing logger so we can see where the seconds go (see CLAUDE.md).
+function log(...a) { if (LOG) console.log(new Date().toISOString(), ...a); }
+async function timed(label, fn) {
+  const t0 = Date.now();
+  log(`▶ ${label} start`);
+  try {
+    const r = await fn();
+    log(`✔ ${label} done in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    return r;
+  } catch (e) {
+    log(`✗ ${label} FAILED in ${((Date.now() - t0) / 1000).toFixed(1)}s:`, String(e?.message || e));
+    throw e;
+  }
+}
 
 // Resolve the Anthropic API key. Priority:
 //   1. Per-request key from the app's Settings (sent as a header, saved on the device)
@@ -182,6 +198,41 @@ const SPECIALIST_SOP = [
   "what to inspect, fake-spotting, and any better alternative from the Guru). 'script' is a short line the buyer can say.",
 ].join("\n");
 
+// ============ FAST MODE: ONE agent does it all (default, ~3x faster) ============
+const FAST_SOP = [
+  "# ROLE",
+  "You are a fast, expert gun-show buying assistant. In ONE pass you identify the item, find real current",
+  "prices, rate the deal, and give a counter-offer plan. You handle complete firearms, AR/AK parts, barrels,",
+  "uppers, 1911/2011 & Glock parts, magazines, optics, lights, holsters, and AMMUNITION. Be accurate and quick.",
+  "",
+  "# STEPS",
+  "1. Identify the exact item, brand, model/variant, caliber/spec, and category (from name, UPC, and/or photo).",
+  "2. Use web_search EFFICIENTLY (a few targeted queries) to get current US prices from reputable sellers,",
+  "   covering BOTH new retailers AND used/auction for firearms (GunBroker, GunsAmerica, Guns.com), and",
+  "   AmmoSeek/ammo sellers for ammo (normalize to the same quantity + price per round). Reputable sources:",
+  SOURCE_REFERENCE,
+  "3. Each price source 'url' MUST be a DIRECT product page link (not a homepage/search). Drop any you can't link.",
+  "4. fairPrice = average street price of legit listings. Rate the table's asking price (out-the-door: factor the",
+  "   buyer's tax/FFL when given; firearms need an FFL transfer, parts/ammo ship to the door):",
+  "     great = asking >=15% below fair · good = 5-15% below · ok = within +/-5% · bad = >5% above.",
+  "     unknown = no asking price (still give the market read and a target to offer).",
+  "5. Give a counter-offer: target price, walk-away price, a one-line script, and brief reasoning.",
+  "",
+  "# OUTPUT — respond with EXACTLY ONE JSON object (no prose):",
+  `{
+  "product": { "name": string, "category": "firearm|part|accessory|optic|magazine|ammo|other", "summary": string, "specs": [string], "msrp": number|null },
+  "market": { "currency": "USD", "newLow": number|null, "newHigh": number|null, "usedLow": number|null, "usedHigh": number|null, "fairPrice": number|null, "sampleSize": number, "note": string },
+  "sources": [ { "store": string, "title": string, "price": number, "condition": "new"|"used", "url": "DIRECT product URL", "inStock": boolean|null, "note": string } ],
+  "deal": { "rating": "great"|"good"|"ok"|"bad"|"unknown", "score": number, "headline": string, "reasoning": string, "askingPrice": number|null, "vsFairPct": number|null },
+  "otd": { "tableOTD": number|null, "onlineOTD": number|null, "cheaper": "table"|"online"|"even"|null, "delta": number|null, "explanation": string },
+  "counterOffer": { "shouldCounter": boolean, "targetPrice": number|null, "walkAwayPrice": number|null, "script": string, "reasoning": string },
+  "usedVsNew": string,
+  "redFlags": [string],
+  "specialistNotes": [string]
+}`,
+  "Include 5-10 real sources with direct links, cheapest first. score 0-100 (higher = better buy). Keep it tight and useful.",
+].join("\n");
+
 // ----- helpers -----
 function extractJson(text) {
   if (!text) return null;
@@ -322,6 +373,32 @@ function specialistPrompt(context, scout, guru, includeGuru) {
   ].join("\n");
 }
 
+function fastUserContent(context, imgBlock) {
+  const content = [];
+  if (imgBlock) content.push(imgBlock);
+  content.push({ type: "text", text: `${context}\n\nIdentify, price (with DIRECT links), rate the deal, and give a counter-offer. Return only the JSON object.` });
+  return content;
+}
+
+// Normalize a fast single-agent result into the same shape the UI expects.
+function normalizeFast(obj) {
+  obj = obj || {};
+  return {
+    product: obj.product || {},
+    market: obj.market || {},
+    sources: sanitizeSources(obj.sources),
+    quality: null,
+    reviewSources: [],
+    deal: obj.deal || { rating: "unknown" },
+    otd: obj.otd || null,
+    counterOffer: obj.counterOffer || {},
+    usedVsNew: obj.usedVsNew || "",
+    redFlags: Array.isArray(obj.redFlags) ? obj.redFlags : [],
+    specialistNotes: Array.isArray(obj.specialistNotes) ? obj.specialistNotes : [],
+    _meta: { model: MODEL, mode: "fast" },
+  };
+}
+
 function mergeResult(scout, guru, spec, includeGuru) {
   return {
     product: scout.product || {},
@@ -382,7 +459,7 @@ app.post("/api/identify", async (req, res) => {
 });
 
 // ---------- non-streaming phase (reliable everywhere) ----------
-async function createPhase(client, { system, userContent, useTools }) {
+async function createPhase(client, { system, userContent, useTools, maxSearches }) {
   const base = {
     model: MODEL,
     max_tokens: useTools ? 6000 : 4000,
@@ -391,7 +468,7 @@ async function createPhase(client, { system, userContent, useTools }) {
     thinking: { type: "enabled", budget_tokens: THINK_BUDGET },
   };
   const withTools = useTools
-    ? { ...base, tools: [{ type: WEB_SEARCH_TOOL, name: "web_search", max_uses: MAX_SEARCHES }] }
+    ? { ...base, tools: [{ type: WEB_SEARCH_TOOL, name: "web_search", max_uses: maxSearches || MAX_SEARCHES }] }
     : base;
   try {
     return collectText(await client.messages.create(withTools));
@@ -409,23 +486,39 @@ app.post("/api/analyze", async (req, res) => {
   const { name, image, upc, deep } = req.body || {};
   const imgBlock = image ? dataUrlToImageBlock(image) : null;
   if (!name && !imgBlock && !upc) return res.status(400).json({ error: "need_name_or_image" });
-  const includeGuru = deep !== false;
+  const includeGuru = deep === true; // FAST is the default; deep (3-agent) is opt-in
   const context = buildContext(req.body);
+  const t0 = Date.now();
+  log(`POST /api/analyze  item="${name || "(photo)"}" mode=${includeGuru ? "deep" : "fast"}`);
 
   try {
-    const scout = extractJson(await createPhase(client, { system: SCOUT_SOP, userContent: scoutUserContent(context, imgBlock), useTools: true })) || {};
-    scout.sources = sanitizeSources(scout.sources);
-
-    let guru = {};
-    if (includeGuru) {
-      guru = extractJson(await createPhase(client, { system: GURU_SOP, userContent: [{ type: "text", text: guruPrompt(context, scout) }], useTools: true })) || {};
-      guru.reviewSources = sanitizeReviewSources(guru.reviewSources);
+    // ---- FAST: single agent does everything ----
+    if (!includeGuru) {
+      const text = await timed("fast", () =>
+        createPhase(client, { system: FAST_SOP, userContent: fastUserContent(context, imgBlock), useTools: true, maxSearches: MAX_SEARCHES })
+      );
+      const out = normalizeFast(extractJson(text));
+      log(`POST /api/analyze done (fast) in ${((Date.now() - t0) / 1000).toFixed(1)}s, ${out.sources.length} sources`);
+      return res.json(out);
     }
 
-    const spec = extractJson(await createPhase(client, { system: SPECIALIST_SOP, userContent: [{ type: "text", text: specialistPrompt(context, scout, guru, includeGuru) }], useTools: false })) || {};
+    // ---- DEEP: Scout + Guru in PARALLEL, then Specialist ----
+    const scoutP = timed("scout", () => createPhase(client, { system: SCOUT_SOP, userContent: scoutUserContent(context, imgBlock), useTools: true }));
+    const guruP = timed("guru", () => createPhase(client, { system: GURU_SOP, userContent: [{ type: "text", text: guruPrompt(context, { product: { name } }) }], useTools: true }));
+    const [scoutText, guruText] = await Promise.all([scoutP, guruP]);
+    const scout = extractJson(scoutText) || {};
+    scout.sources = sanitizeSources(scout.sources);
+    const guru = extractJson(guruText) || {};
+    guru.reviewSources = sanitizeReviewSources(guru.reviewSources);
 
-    res.json(mergeResult(scout, guru, spec, includeGuru));
+    const spec = extractJson(await timed("specialist", () =>
+      createPhase(client, { system: SPECIALIST_SOP, userContent: [{ type: "text", text: specialistPrompt(context, scout, guru, true) }], useTools: false })
+    )) || {};
+
+    log(`POST /api/analyze done (deep) in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    res.json(mergeResult(scout, guru, spec, true));
   } catch (err) {
+    log(`POST /api/analyze ERROR in ${((Date.now() - t0) / 1000).toFixed(1)}s:`, String(err?.message || err));
     res.status(err?.status || 500).json({ error: "analyze_failed", detail: String(err?.message || err) });
   }
 });
@@ -503,16 +596,32 @@ app.post("/api/analyze/stream", async (req, res) => {
   const { name, image, upc, deep } = req.body || {};
   const imgBlock = image ? dataUrlToImageBlock(image) : null;
   if (!name && !imgBlock && !upc) { sse(res, { t: "error", error: "need_name_or_image" }); return res.end(); }
-  const includeGuru = deep !== false;
+  const includeGuru = deep === true; // FAST default; deep (3-agent) opt-in
   const context = buildContext(req.body);
+  const t0 = Date.now();
+  log(`POST /api/analyze/stream  item="${name || "(photo)"}" mode=${includeGuru ? "deep" : "fast"}`);
 
   let aborted = false;
   req.on("close", () => { aborted = true; });
 
   // heartbeat so proxies/browsers don't drop the connection during long thinking gaps
-  const hb = setInterval(() => { try { res.write(": ping\n\n"); } catch {} }, 15000);
+  const hb = setInterval(() => { try { res.write(": ping\n\n"); } catch {} }, 10000);
 
   try {
+    // ---- FAST: one streamed agent ----
+    if (!includeGuru) {
+      sse(res, { t: "phase", phase: "scout", label: "Deal Finder", role: "Price + verdict", status: "start" });
+      const text = await runPhase(client, res, "scout", { system: FAST_SOP, userContent: fastUserContent(context, imgBlock), useTools: true });
+      if (aborted) { clearInterval(hb); return res.end(); }
+      sse(res, { t: "phase", phase: "scout", status: "done" });
+      const out = normalizeFast(extractJson(text));
+      log(`stream done (fast) in ${((Date.now() - t0) / 1000).toFixed(1)}s, ${out.sources.length} sources`);
+      sse(res, { t: "done", data: out });
+      clearInterval(hb);
+      return res.end();
+    }
+
+    // ---- DEEP: 3 agents, live ----
     sse(res, { t: "phase", phase: "scout", label: "The Scout", role: "Finds real prices", status: "start" });
     const scoutText = await runPhase(client, res, "scout", { system: SCOUT_SOP, userContent: scoutUserContent(context, imgBlock), useTools: true });
     if (aborted) { clearInterval(hb); return res.end(); }
@@ -520,23 +629,22 @@ app.post("/api/analyze/stream", async (req, res) => {
     scout.sources = sanitizeSources(scout.sources);
     sse(res, { t: "phase", phase: "scout", status: "done" });
 
-    let guru = {};
-    if (includeGuru) {
-      sse(res, { t: "phase", phase: "guru", label: "The Gun Guru", role: "Quality & reviews", status: "start" });
-      const guruText = await runPhase(client, res, "guru", { system: GURU_SOP, userContent: [{ type: "text", text: guruPrompt(context, scout) }], useTools: true });
-      if (aborted) { clearInterval(hb); return res.end(); }
-      guru = extractJson(guruText) || {};
-      guru.reviewSources = sanitizeReviewSources(guru.reviewSources);
-      sse(res, { t: "phase", phase: "guru", status: "done" });
-    }
+    sse(res, { t: "phase", phase: "guru", label: "The Gun Guru", role: "Quality & reviews", status: "start" });
+    const guruText = await runPhase(client, res, "guru", { system: GURU_SOP, userContent: [{ type: "text", text: guruPrompt(context, scout) }], useTools: true });
+    if (aborted) { clearInterval(hb); return res.end(); }
+    const guru = extractJson(guruText) || {};
+    guru.reviewSources = sanitizeReviewSources(guru.reviewSources);
+    sse(res, { t: "phase", phase: "guru", status: "done" });
 
     sse(res, { t: "phase", phase: "specialist", label: "Deal Specialist", role: "Verdict & counter", status: "start" });
-    const specText = await runPhase(client, res, "specialist", { system: SPECIALIST_SOP, userContent: [{ type: "text", text: specialistPrompt(context, scout, guru, includeGuru) }], useTools: false });
+    const specText = await runPhase(client, res, "specialist", { system: SPECIALIST_SOP, userContent: [{ type: "text", text: specialistPrompt(context, scout, guru, true) }], useTools: false });
     if (aborted) { clearInterval(hb); return res.end(); }
     const spec = extractJson(specText) || {};
 
-    sse(res, { t: "done", data: mergeResult(scout, guru, spec, includeGuru) });
+    log(`stream done (deep) in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    sse(res, { t: "done", data: mergeResult(scout, guru, spec, true) });
   } catch (err) {
+    log(`stream ERROR in ${((Date.now() - t0) / 1000).toFixed(1)}s:`, String(err?.message || err));
     sse(res, { t: "error", error: "analyze_failed", detail: String(err?.message || err) });
   }
   clearInterval(hb);
