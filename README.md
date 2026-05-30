@@ -1,15 +1,20 @@
 # 🎯 Gun Show Deal Finder
 
-A fast, mobile-first **PWA** for the gun show floor. Snap a photo or type an item and a
-**two-agent AI pipeline** goes to work, live, in front of you:
+A fast, mobile-first **PWA** for the gun show floor. Snap a photo, **scan a barcode**, or type an
+item, and a **three-agent AI pipeline** goes to work, live, in front of you:
 
 - **🔭 The Scout** — identifies the exact item and web-searches reputable retailers + used/auction
-  marketplaces to build a verified price picture and a fair average ("good") price.
-- **🤝 The Gun Show Deal Specialist** — a veteran negotiator that takes the Scout's findings and
-  delivers the verdict (**great / good / ok / bad**), an out-the-door counter-offer plan, a script
-  to say at the table, what to inspect, fakes to avoid, and whether used is the smarter buy.
+  marketplaces to build a verified price picture and a fair average ("good") price, with a
+  **direct, tappable product link for every price** so you can verify it yourself.
+- **🧠 The Gun Guru** — the most knowledgeable gun person alive: pulls reviews, Reddit/forum
+  consensus, and known issues, rates the quality tier (**top-tier → solid → budget-ok → chinesium**),
+  and bluntly tells you when something is cheap crap (with links to the threads).
+- **🤝 The Deal Specialist** — a veteran negotiator that weighs **price *and* quality** to deliver
+  the verdict (**great / good / ok / bad**), an out-the-door counter-offer plan, a script to say at
+  the table, what to inspect, fakes to avoid, and whether used is the smarter buy.
 
-You watch both agents **reason and search in real time**, then get a clean, comparable result.
+You watch all three agents **reason and search in real time**, then get a clean, comparable result.
+Toggle the Gun Guru off for a faster/cheaper two-agent run.
 
 > For research only. Verify prices and follow all federal, state, and local laws before buying.
 
@@ -17,14 +22,16 @@ You watch both agents **reason and search in real time**, then get a clean, comp
 
 ## What it does
 
-1. **Scan or type** — take a photo (vision IDs make/model/caliber, reads price tags & box labels) or type the name.
+1. **Scan, snap, or type** — 📷 photo, 🔖 **barcode/UPC scan**, or type the name. Vision IDs make/model/caliber and reads price tags & box labels.
 2. **Enter their asking price** + condition.
 3. **Watch it work** — a live activity feed streams each agent's thinking and every web search it runs.
 4. **Deal score** with an animated gauge, rated vs. the fair average (on an out-the-door basis):
    - **Great** ≥15% below fair · **Good** 5–15% below · **OK** ±5% · **Bad** >5% above
-5. **Counter-offer playbook** — target price, walk-away price, a script, and the reasoning.
-6. **Specialist's playbook** — cash-discount asks, OTD math, bundle ideas, inspection & fake-spotting tips.
-7. **Used vs. new** advice + red flags, **price sources** ranked cheapest-first, and on-device **history**.
+5. **Quality check** — tier (top-tier → chinesium), pros/cons, known issues, and better alternatives, with **review/Reddit links**.
+6. **Counter-offer playbook** — target price, walk-away price, a script, and the reasoning.
+7. **Specialist's playbook** — cash-discount asks, OTD math, bundle ideas, inspection & fake-spotting tips.
+8. **Verifiable price sources** — ranked cheapest-first, each with a store favicon and a **direct product link to verify**.
+9. **Share** a result summary, **used vs. new** advice + red flags, and on-device **history**.
 
 ### Works for anything that shoots or bolts onto something
 Complete firearms, AR-platform parts (uppers, lowers, **barrels**, BCGs, handguards, triggers),
@@ -85,8 +92,8 @@ A `Dockerfile` is included — point Railway or Fly at the repo and deploy. No c
 
 ```
 server.js              Express API:
-                         /api/identify        Claude vision photo → product name
-                         /api/analyze/stream  SSE two-agent pipeline (Scout → Specialist), streams reasoning + searches
+                         /api/identify        Claude vision photo/barcode → product name (reads UPC)
+                         /api/analyze/stream  SSE 3-agent pipeline (Scout → Gun Guru → Specialist), streams reasoning + searches
                          /api/health
 public/
   index.html           Mobile UI + live agent activity feed
@@ -106,8 +113,9 @@ Dockerfile             Railway/Fly/any Docker host
 - Photos are resized client-side (≤1280px JPEG) before upload. No database — history lives in the browser.
 
 ### Cost per lookup (estimate)
-Roughly **$0.20–0.45** for a full two-agent run with live web search (two model calls + thinking +
-up to `MAX_SEARCHES` web searches at ~$0.01 each). Typing the name instead of using a photo is cheaper.
+Roughly **$0.40–0.75** for a full three-agent run with the Gun Guru on (three model calls + thinking +
+web searches at ~$0.01 each). Turning the Gun Guru **off** drops it to ~**$0.20–0.45** (two agents).
+Typing the name instead of using a photo is cheaper.
 Lower `MAX_SEARCHES` / `THINK_BUDGET` to reduce cost.
 
 ### Config (env)

@@ -63,13 +63,14 @@ const SOURCE_REFERENCE = Object.entries(SOURCE_GROUPS)
 const SCOUT_SOP = [
   "# ROLE",
   "You are THE SCOUT — a firearms sourcing & pricing analyst. Your ONLY job is to identify the exact",
-  "item and find REAL, CURRENT market prices. You do NOT rate the deal or negotiate — a separate",
-  "Deal Specialist does that. Be accurate and conservative; never invent prices or URLs.",
+  "item and find REAL, CURRENT market prices with VERIFIABLE links. You do NOT rate the deal or judge",
+  "quality — other agents do that. Never invent prices or URLs.",
   "",
   "# STANDARD OPERATING PROCEDURE",
-  "1. IDENTIFY: From the name and/or photo, determine the exact item, brand, model/variant, caliber/spec,",
-  "   and CATEGORY (firearm | part | accessory | optic | magazine | ammo | other). If a photo is given,",
-  "   confirm the precise configuration (generation, finish, barrel length, optic cut, included extras, round count).",
+  "1. IDENTIFY: From the name, UPC/barcode (if given), and/or photo, determine the exact item, brand,",
+  "   model/variant, caliber/spec, and CATEGORY (firearm | part | accessory | optic | magazine | ammo | other).",
+  "   If a photo is given, confirm the precise configuration (generation, finish, barrel length, optic cut,",
+  "   included extras, round count).",
   "2. UNIT: Decide the correct pricing unit. For ammo, lock the quantity to match the table item",
   "   (e.g. per box of 20/50, or per case of 1000) and compute price PER ROUND.",
   "3. SEARCH: Use web_search to pull current listings from the source groups relevant to the category:",
@@ -77,49 +78,88 @@ const SCOUT_SOP = [
   "4. COVERAGE: For FIREARMS, get BOTH new retailers AND used/auction (GunBroker, GunsAmerica, Guns.com).",
   "   For PARTS/OPTICS/ACCESSORIES, include Amazon & B&H where they carry it; match exact model/part number + fitment.",
   "   For AMMO, use AmmoSeek + ammo retailers and normalize to the same quantity.",
-  "5. VALIDATE: Prefer recent, in-stock, US listings in USD. Drop obvious outliers, expired, and out-of-stock placeholders.",
-  "6. COMPUTE: fairPrice = the average street price of the legitimate listings (the realistic 'good' price).",
-  "   Provide new low/high and used low/high ranges and how many listings you used (sampleSize).",
-  "7. NOTE: In market.note, record per-round/per-unit math and any cost-to-compare factors (typical shipping,",
-  "   whether an FFL transfer would be required for online firearm purchase).",
+  "5. VERIFY LINKS: Every source 'url' MUST be a DIRECT link to that exact product's listing/detail page",
+  "   (the page showing that price) — NOT a homepage, category, or search-results page — so the buyer can tap to verify.",
+  "   Use the real URLs returned by web_search. If you cannot find a direct product URL for a price, drop that source.",
+  "6. VALIDATE: Prefer recent, in-stock, US listings in USD. Drop outliers, expired, and out-of-stock placeholders.",
+  "7. COMPUTE: fairPrice = average street price of the legitimate listings. Provide new low/high and used low/high",
+  "   ranges and how many listings you used (sampleSize).",
+  "8. NOTE: In market.note, record per-round/per-unit math and cost-to-compare factors (typical shipping, whether",
+  "   an FFL transfer would be required for an online firearm purchase).",
   "",
   "# OUTPUT",
   "Respond with EXACTLY ONE JSON object (no prose before/after):",
   `{
   "product": { "name": string, "category": "firearm|part|accessory|optic|magazine|ammo|other", "summary": string, "specs": [string], "msrp": number|null },
   "market": { "currency": "USD", "newLow": number|null, "newHigh": number|null, "usedLow": number|null, "usedHigh": number|null, "fairPrice": number|null, "sampleSize": number, "note": string },
-  "sources": [ { "store": string, "title": string, "price": number, "condition": "new"|"used", "url": string, "inStock": boolean|null, "note": string } ]
+  "sources": [ { "store": string, "title": string, "price": number, "condition": "new"|"used", "url": "DIRECT product page URL", "inStock": boolean|null, "note": string } ]
 }`,
-  "Include 6-12 real sources when possible, cheapest first. Every source needs a real store, price, and URL you actually found.",
+  "Include 6-12 real sources when possible, cheapest first. Every source needs a real store, a price, and a working DIRECT product URL.",
 ].join("\n");
 
-// ============ AGENT 2: THE GUN SHOW DEAL SPECIALIST (SOP) ============
+// ===================== AGENT 2: THE GUN GURU (SOP) =====================
+const GURU_SOP = [
+  "# ROLE",
+  "You are THE GUN GURU — the most knowledgeable firearms person alive: competition shooter, armorer, and",
+  "reviewer who has handled everything. You judge QUALITY and REPUTATION, not price. You love genuinely good",
+  "gear and you bluntly call out cheap 'chinesium' junk for what it is. Be honest, specific, and useful.",
+  "",
+  "# STANDARD OPERATING PROCEDURE",
+  "1. Confirm the exact item/brand/variant from the provided item and the Scout's findings.",
+  "2. Use web_search to gather REAL-WORLD consensus and KEEP THE LINKS:",
+  "   - Professional & YouTube reviews (and their overall take)",
+  "   - Owner feedback on Reddit (r/guns, r/CAguns, r/ar15, r/Glocks, r/longrange, etc.) and forums (AR15.com, etc.)",
+  "   - Known defects, recalls, QC track record, durability / round-count reports, warranty",
+  "   - Manufacturer reputation and aftermarket/parts/holster support",
+  "3. Decide an honest quality tier: top-tier | solid | budget-ok | chinesium (cheap crap).",
+  "4. Call out common failure points, and whether a better-value alternative exists near the same price.",
+  "5. Every reviewSource 'url' must be a real, working link to that review/thread so the buyer can read it.",
+  "",
+  "# OUTPUT",
+  "Respond with EXACTLY ONE JSON object (no prose before/after):",
+  `{
+  "quality": {
+    "tier": "top-tier"|"solid"|"budget-ok"|"chinesium",
+    "score": number,
+    "verdict": string,
+    "pros": [string],
+    "cons": [string],
+    "knownIssues": [string],
+    "reputation": string,
+    "alternatives": [ { "name": string, "why": string } ]
+  },
+  "reviewSources": [ { "title": string, "url": "direct link", "source": "e.g. Reddit r/guns, TFB, YouTube" } ]
+}`,
+  "score 0-100 = overall quality & value-for-the-money. Be blunt: if it's chinesium, say so and why. 3-6 review sources.",
+].join("\n");
+
+// ============ AGENT 3: THE GUN SHOW DEAL SPECIALIST (SOP) ============
 const SPECIALIST_SOP = [
   "# ROLE",
   "You are a VETERAN GUN SHOW DEAL SPECIALIST. You've worked hundreds of shows on both sides of the table.",
-  "You receive THE SCOUT's verified market findings plus the table's asking price, and you deliver the verdict,",
-  "the negotiation plan, and what to watch out for. Be street-smart, specific, and honest.",
+  "You receive THE SCOUT's verified prices AND (when available) THE GUN GURU's quality assessment, plus the",
+  "table's asking price. You deliver the final verdict, the negotiation plan, and what to watch for.",
   "",
   "# WHAT YOU KNOW (apply the relevant parts)",
-  "- OUT-THE-DOOR (OTD) MATH: Compare apples to apples. An online price is really price + shipping",
-  "  + FFL transfer ($25-75 for firearms) + possible sales tax. A cash table price often has no tax/shipping.",
-  "  Factor this so the buyer sees the TRUE delta, not just sticker vs sticker.",
-  "- CASH IS KING: Most tables give ~5-10% off for cash. Always have the buyer ask for the cash/out-the-door price first.",
-  "- TIMING: Best discounts come late on the final day — vendors don't want to pack inventory. Sunday afternoon is leverage.",
-  "- BUNDLES: Adding ammo, a mag, a holster, or an optic can unlock a package price better than buying separately.",
-  "- INSPECTION (used firearms): check bore/rifling, lockup & timing, finish wear vs refinish/reblue, import marks,",
-  "  matching serial numbers, police trade-in markings, and cracks (especially polymer frames & cast slides).",
-  "- COUNTERFEITS / FAKES: watch for fake optics (Trijicon RMR, Aimpoint, EOTech, Holosun clones), counterfeit",
-  "  magazines (fake Magpul PMAGs), Glock/1911 clones sold as OEM, and reproduction mil-surplus passed as original.",
-  "- TOO-GOOD / RED FLAGS: prices far below market, no paperwork, filed/altered serials, pressure to rush — walk away.",
-  "- COST TO FEED & SUPPORT: note caliber availability/price and aftermarket/holster/mag support for the platform.",
-  "- LAW: remind the buyer to follow all federal/state/local law and use an FFL where required. You are not giving legal advice.",
+  "- QUALITY MATTERS: A low price on 'chinesium' is NOT a great deal. Don't tell someone to buy junk just because",
+  "  it's cheap. If the Guru flagged a better-value alternative, surface it. Great quality can justify paying near fair.",
+  "- OUT-THE-DOOR (OTD) MATH: an online price is really price + shipping + FFL transfer ($25-75 for firearms)",
+  "  + possible sales tax. A cash table price often has no tax/shipping. Show the TRUE delta, not sticker vs sticker.",
+  "- CASH IS KING: most tables give ~5-10% off for cash. Have the buyer ask for the cash/out-the-door price first.",
+  "- TIMING: best discounts come late on the final day — vendors don't want to pack inventory.",
+  "- BUNDLES: adding ammo, a mag, a holster, or an optic can unlock a better package price.",
+  "- INSPECTION (used firearms): bore/rifling, lockup & timing, finish wear vs refinish/reblue, import marks,",
+  "  matching serials, police trade-in markings, cracks (especially polymer frames & cast slides).",
+  "- COUNTERFEITS: fake optics (Trijicon RMR, Aimpoint, EOTech, Holosun clones), counterfeit Magpul PMAGs,",
+  "  Glock/1911 clones sold as OEM, reproduction mil-surplus passed as original.",
+  "- TOO-GOOD / RED FLAGS: far-below-market prices, no paperwork, filed/altered serials, pressure to rush — walk away.",
+  "- LAW: remind the buyer to follow all federal/state/local law and use an FFL where required. Not legal advice.",
   "",
-  "# RATING (vs the Scout's fairPrice, considered on an OTD basis)",
-  "  great = asking is >= 15% below fair (or below the cheapest legit listing) -> buy it",
+  "# RATING (vs the Scout's fairPrice, on an OTD basis, tempered by quality)",
+  "  great = asking is >= 15% below fair (or below the cheapest legit listing) AND quality isn't junk -> buy it",
   "  good  = asking is 5-15% below fair",
   "  ok    = asking is within +/-5% of fair",
-  "  bad   = asking is > 5% above fair -> overpriced",
+  "  bad   = asking is > 5% above fair, OR it's chinesium at any price -> pass / overpriced",
   "  unknown = no asking price given (still give the market read & a target to offer).",
   "score = 0-100, higher = better for the buyer. vsFairPct = signed % of asking vs fair (negative = below fair).",
   "",
@@ -133,7 +173,7 @@ const SPECIALIST_SOP = [
   "specialistNotes": [string]
 }`,
   "specialistNotes = 3-6 punchy, ITEM-SPECIFIC tactical tips for THIS purchase (cash ask, OTD delta, bundle idea,",
-  "what to inspect, fake-spotting). The 'script' is a short line the buyer can actually say at the table.",
+  "what to inspect, fake-spotting, and any better alternative from the Guru). 'script' is a short line the buyer can say.",
 ].join("\n");
 
 // ----- helpers -----
@@ -181,13 +221,68 @@ function dataUrlToImageBlock(dataUrl) {
   return { type: "image", source: { type: "base64", media_type: m[1], data: m[2] } };
 }
 
-// ---------- /api/identify : quick photo -> product name ----------
+function validUrl(u) {
+  try {
+    const x = new URL(String(u));
+    return x.protocol === "http:" || x.protocol === "https:" ? x.href : null;
+  } catch { return null; }
+}
+
+// Keep only price sources with a valid DIRECT url, de-duplicate, sort cheapest-first.
+function sanitizeSources(arr) {
+  if (!Array.isArray(arr)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const s of arr) {
+    const price = Number(s?.price);
+    if (!Number.isFinite(price) || price <= 0) continue;
+    const url = validUrl(s?.url);
+    const key = `${(s?.store || "").toLowerCase()}|${url || (s?.title || "").toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      store: s.store || "",
+      title: s.title || "",
+      price,
+      condition: String(s.condition || "").toLowerCase() === "used" ? "used" : "new",
+      url,
+      inStock: s.inStock ?? null,
+      note: s.note || "",
+    });
+  }
+  out.sort((a, b) => a.price - b.price);
+  return out.slice(0, 12);
+}
+
+function sanitizeReviewSources(arr) {
+  if (!Array.isArray(arr)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const s of arr) {
+    const url = validUrl(s?.url);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    out.push({ title: s.title || url, url, source: s.source || "" });
+  }
+  return out.slice(0, 8);
+}
+
+// ---------- /api/identify : quick photo (and/or barcode) -> product name ----------
 app.post("/api/identify", async (req, res) => {
   const client = clientFor(req);
   if (!client) return res.status(401).json({ error: "missing_key" });
   const img = dataUrlToImageBlock(req.body?.image);
-  if (!img) return res.status(400).json({ error: "no_image" });
+  const upc = (req.body?.upc || "").toString().trim();
+  if (!img && !upc) return res.status(400).json({ error: "no_image" });
   try {
+    const content = [];
+    if (img) content.push(img);
+    content.push({
+      type: "text",
+      text:
+        (upc ? `Scanned UPC/barcode: ${upc}. Use it to identify the exact product. ` : "") +
+        "Identify this item for a price search. Return only the JSON object.",
+    });
     const message = await client.messages.create({
       model: MODEL,
       max_tokens: 700,
@@ -195,18 +290,16 @@ app.post("/api/identify", async (req, res) => {
         "You are an expert at identifying anything firearms-related: complete firearms, " +
         "AR-platform parts (uppers, lowers, barrels, BCGs, handguards), 1911/2011 and Glock parts, " +
         "magazines, optics, lights, holsters, suppressors, and AMMUNITION. " +
-        "Identify the item in the photo as precisely as possible. For guns: make, model, caliber, " +
-        "generation/variant, barrel length, finish, notable features. For parts: brand, model/part number, " +
-        "fitment (e.g. AR-15 vs AR-10, Glock gen). For ammo: brand, caliber, grain weight, bullet type, " +
-        "and ROUND COUNT on the box. Read any visible tags, price stickers, box labels, or markings. " +
+        "Identify the item as precisely as possible. If a UPC/barcode is provided or visible, read it and use it. " +
+        "For guns: make, model, caliber, generation/variant, barrel length, finish. For parts: brand, model/part " +
+        "number, fitment (e.g. AR-15 vs AR-10, Glock gen). For ammo: brand, caliber, grain weight, bullet type, " +
+        "ROUND COUNT. Read any visible tags, price stickers, box labels, or markings. " +
         "Respond ONLY with a JSON object: " +
         '{ "name": "best single search string (brand model caliber/spec)", ' +
         '"category": "firearm|part|accessory|optic|magazine|ammo|other", ' +
-        '"confidence": "high|medium|low", "alternatives": ["other possible matches"], ' +
+        '"confidence": "high|medium|low", "upc": string|null, "alternatives": ["other possible matches"], ' +
         '"observedPrice": number|null, "quantity": number|null, "notes": "what you see, incl. condition cues" }',
-      messages: [
-        { role: "user", content: [img, { type: "text", text: "Identify this item for a price search. Return only the JSON object." }] },
-      ],
+      messages: [{ role: "user", content }],
     });
     const json = extractJson(collectText(message));
     if (!json) return res.status(502).json({ error: "parse_failed", raw: collectText(message) });
@@ -221,7 +314,6 @@ function sse(res, obj) {
   res.write(`data: ${JSON.stringify(obj)}\n\n`);
 }
 
-// Consume a streamed message, emitting reasoning/search/result events live.
 async function consumeStream(stream, res, phase) {
   const toolBuf = {};
   for await (const event of stream) {
@@ -254,7 +346,6 @@ async function consumeStream(stream, res, phase) {
   return collectText(final);
 }
 
-// Run one agent phase as a stream, with graceful fallback if thinking/tools unsupported.
 async function runPhase(client, res, phase, { system, userContent, useTools }) {
   const base = {
     model: MODEL,
@@ -269,14 +360,13 @@ async function runPhase(client, res, phase, { system, userContent, useTools }) {
   try {
     return await consumeStream(client.messages.stream(withTools), res, phase);
   } catch (err) {
-    // Fall back: drop thinking (and tools) if the account/model rejects them.
     sse(res, { t: "status", phase, text: "Adjusting capabilities and retrying…" });
     const fb = { model: MODEL, max_tokens: base.max_tokens, system, messages: base.messages };
     return await consumeStream(client.messages.stream(fb), res, phase);
   }
 }
 
-// ---------- /api/analyze/stream : two-agent live pipeline ----------
+// ---------- /api/analyze/stream : multi-agent live pipeline ----------
 app.post("/api/analyze/stream", async (req, res) => {
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -289,9 +379,10 @@ app.post("/api/analyze/stream", async (req, res) => {
   const client = clientFor(req);
   if (!client) { sse(res, { t: "error", error: "missing_key" }); return res.end(); }
 
-  const { name, askingPrice, condition, location, image } = req.body || {};
+  const { name, askingPrice, condition, location, image, upc, deep } = req.body || {};
   const imgBlock = image ? dataUrlToImageBlock(image) : null;
-  if (!name && !imgBlock) { sse(res, { t: "error", error: "need_name_or_image" }); return res.end(); }
+  if (!name && !imgBlock && !upc) { sse(res, { t: "error", error: "need_name_or_image" }); return res.end(); }
+  const includeGuru = deep !== false; // default ON
 
   const asking = Number(askingPrice);
   const hasAsking = Number.isFinite(asking) && asking > 0;
@@ -300,33 +391,58 @@ app.post("/api/analyze/stream", async (req, res) => {
 
   const context = [
     `Item: ${name || "(identify from the photo first)"}`,
+    upc ? `UPC/barcode: ${upc}` : null,
     hasAsking ? `Table asking price: $${asking}` : "Table asking price: (not provided)",
     condition ? `Condition at the table: ${condition}` : null,
     location ? `Location: ${location}` : null,
   ].filter(Boolean).join("\n");
 
   try {
-    // ---- Phase 1: The Scout ----
+    // ---- Phase 1: The Scout (prices) ----
     sse(res, { t: "phase", phase: "scout", label: "The Scout", role: "Finds real prices", status: "start" });
     const scoutContent = [];
     if (imgBlock) scoutContent.push(imgBlock);
-    scoutContent.push({ type: "text", text: `${context}\n\nIdentify the item, search reputable stores, and return the market JSON.` });
+    scoutContent.push({ type: "text", text: `${context}\n\nIdentify the item, search reputable stores, and return the market JSON with DIRECT product links.` });
     const scoutText = await runPhase(client, res, "scout", { system: SCOUT_SOP, userContent: scoutContent, useTools: true });
     if (aborted) return res.end();
     const scout = extractJson(scoutText) || {};
+    scout.sources = sanitizeSources(scout.sources);
     sse(res, { t: "phase", phase: "scout", status: "done", data: scout });
 
-    // ---- Phase 2: The Gun Show Deal Specialist ----
-    sse(res, { t: "phase", phase: "specialist", label: "Gun Show Deal Specialist", role: "Verdict & negotiation", status: "start" });
+    // ---- Phase 2: The Gun Guru (quality / reviews) ----
+    let guru = {};
+    if (includeGuru) {
+      sse(res, { t: "phase", phase: "guru", label: "The Gun Guru", role: "Quality & reviews", status: "start" });
+      const guruPrompt = [
+        context,
+        "",
+        `The Scout identified: ${JSON.stringify(scout.product || {})}`,
+        "",
+        "Research real-world quality, reviews, Reddit/forum consensus, and known issues. Is this quality kit or chinesium? Return only the JSON object.",
+      ].join("\n");
+      const guruText = await runPhase(client, res, "guru", {
+        system: GURU_SOP,
+        userContent: [{ type: "text", text: guruPrompt }],
+        useTools: true,
+      });
+      if (aborted) return res.end();
+      guru = extractJson(guruText) || {};
+      guru.reviewSources = sanitizeReviewSources(guru.reviewSources);
+      sse(res, { t: "phase", phase: "guru", status: "done", data: guru });
+    }
+
+    // ---- Phase 3: The Gun Show Deal Specialist (verdict) ----
+    sse(res, { t: "phase", phase: "specialist", label: "Deal Specialist", role: "Verdict & counter", status: "start" });
     const specPrompt = [
       context,
       "",
-      "THE SCOUT'S VERIFIED FINDINGS (use these as your market data):",
+      "THE SCOUT'S VERIFIED FINDINGS:",
       "```json",
       JSON.stringify({ product: scout.product, market: scout.market, sources: scout.sources }, null, 2),
       "```",
+      includeGuru ? "\nTHE GUN GURU'S QUALITY ASSESSMENT:\n```json\n" + JSON.stringify(guru.quality || {}, null, 2) + "\n```" : "",
       "",
-      "Now deliver your verdict, counter-offer plan, used-vs-new call, red flags, and tactical notes. Return only the JSON object.",
+      "Now deliver your verdict, counter-offer plan, used-vs-new call, red flags, and tactical notes (factor in quality). Return only the JSON object.",
     ].join("\n");
     const specText = await runPhase(client, res, "specialist", {
       system: SPECIALIST_SOP,
@@ -340,6 +456,8 @@ app.post("/api/analyze/stream", async (req, res) => {
       product: scout.product || {},
       market: scout.market || {},
       sources: scout.sources || [],
+      quality: guru.quality || null,
+      reviewSources: guru.reviewSources || [],
       deal: spec.deal || { rating: "unknown" },
       counterOffer: spec.counterOffer || {},
       usedVsNew: spec.usedVsNew || "",

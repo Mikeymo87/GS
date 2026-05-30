@@ -3,12 +3,25 @@
 const $ = (id) => document.getElementById(id);
 const KEY_STORE = "gsdf_api_key";
 const HIST_STORE = "gsdf_history";
+const DEEP_STORE = "gsdf_deep";
 
 let selectedImage = null; // data URL
+let scannedUPC = null;
 let identifying = false;
 let runController = null;
+let lastPayload = {};
+let lastResult = null;
 
-/* ---------------- image handling ---------------- */
+/* ---------------- image helpers ---------------- */
+function loadImg(src) {
+  return new Promise((res, rej) => {
+    const i = new Image();
+    i.onload = () => res(i);
+    i.onerror = rej;
+    i.src = src;
+  });
+}
+
 async function fileToResizedDataUrl(file, maxDim = 1280, quality = 0.82) {
   const dataUrl = await new Promise((res, rej) => {
     const r = new FileReader();
@@ -16,12 +29,7 @@ async function fileToResizedDataUrl(file, maxDim = 1280, quality = 0.82) {
     r.onerror = rej;
     r.readAsDataURL(file);
   });
-  const img = await new Promise((res, rej) => {
-    const i = new Image();
-    i.onload = () => res(i);
-    i.onerror = rej;
-    i.src = dataUrl;
-  });
+  const img = await loadImg(dataUrl);
   let { width, height } = img;
   if (Math.max(width, height) > maxDim) {
     const scale = maxDim / Math.max(width, height);
@@ -35,7 +43,21 @@ async function fileToResizedDataUrl(file, maxDim = 1280, quality = 0.82) {
   return canvas.toDataURL("image/jpeg", quality);
 }
 
-async function onImageChosen(file) {
+// Try to read a barcode/UPC from the image using the native BarcodeDetector
+// (Android Chrome). On unsupported browsers we just return null and let Claude
+// vision read the barcode/label from the photo instead.
+async function attemptBarcode(dataUrl) {
+  try {
+    if (!("BarcodeDetector" in window)) return null;
+    const fmts = await window.BarcodeDetector.getSupportedFormats?.().catch(() => null);
+    const det = new window.BarcodeDetector(fmts ? { formats: fmts } : undefined);
+    const img = await loadImg(dataUrl);
+    const codes = await det.detect(img);
+    return codes && codes[0] ? codes[0].rawValue : null;
+  } catch { return null; }
+}
+
+async function onImageChosen(file, opts = {}) {
   if (!file) return;
   try {
     selectedImage = await fileToResizedDataUrl(file);
@@ -45,15 +67,22 @@ async function onImageChosen(file) {
   }
   $("thumb").src = selectedImage;
   $("thumbWrap").classList.remove("hidden");
-  $("idStatus").textContent = "";
+  $("idStatus").textContent = opts.barcode ? "🔖 Reading barcode…" : "";
+  scannedUPC = null;
+  if (opts.barcode) {
+    scannedUPC = await attemptBarcode(selectedImage);
+    if (scannedUPC) $("idStatus").textContent = `🔖 UPC ${scannedUPC} — identifying…`;
+  }
   identify();
 }
 
 function clearImage() {
   selectedImage = null;
+  scannedUPC = null;
   $("thumbWrap").classList.add("hidden");
   $("cameraInput").value = "";
   $("galleryInput").value = "";
+  $("barcodeInput").value = "";
 }
 
 /* ---------------- API ---------------- */
@@ -65,14 +94,14 @@ function apiHeaders() {
 }
 
 async function identify() {
-  if (!selectedImage || identifying) return;
+  if ((!selectedImage && !scannedUPC) || identifying) return;
   identifying = true;
-  $("idStatus").textContent = "🔎 Identifying…";
+  if (!$("idStatus").textContent) $("idStatus").textContent = "🔎 Identifying…";
   try {
     const r = await fetch("/api/identify", {
       method: "POST",
       headers: apiHeaders(),
-      body: JSON.stringify({ image: selectedImage }),
+      body: JSON.stringify({ image: selectedImage, upc: scannedUPC }),
     });
     if (r.status === 401) {
       $("idStatus").textContent = "⚠️ Add your API key in ⚙️";
@@ -82,6 +111,7 @@ async function identify() {
     const data = await r.json();
     if (data && data.name) {
       if (!$("nameInput").value.trim()) $("nameInput").value = data.name;
+      if (data.upc && !scannedUPC) scannedUPC = data.upc;
       const conf = data.confidence ? ` · ${data.confidence} confidence` : "";
       $("idStatus").textContent = `✓ ${data.name}${conf}`;
       if (data.observedPrice && !$("priceInput").value) $("priceInput").value = data.observedPrice;
@@ -96,21 +126,15 @@ async function identify() {
 }
 
 /* ---------------- live activity feed ---------------- */
-let currentThink = null; // { el, txt, phase }
+const PHASE_ICON = { scout: "🔭", guru: "🧠", specialist: "🤝" };
+let currentThink = null;
 
 function resetFeed() {
   $("feed").innerHTML = "";
   currentThink = null;
-  ["scout", "specialist"].forEach((p) => {
-    const a = $(`agent-${p}`);
-    a.classList.remove("active", "done");
-  });
+  ["scout", "guru", "specialist"].forEach((p) => $(`agent-${p}`).classList.remove("active", "done"));
 }
-
-function feedScroll() {
-  const f = $("feed");
-  f.scrollTop = f.scrollHeight;
-}
+function feedScroll() { const f = $("feed"); f.scrollTop = f.scrollHeight; }
 
 function finalizeThink() {
   if (currentThink) {
@@ -119,7 +143,6 @@ function finalizeThink() {
     currentThink = null;
   }
 }
-
 function addLine(cls, html) {
   finalizeThink();
   const div = document.createElement("div");
@@ -129,7 +152,6 @@ function addLine(cls, html) {
   feedScroll();
   return div;
 }
-
 function pushReasoning(phase, text) {
   if (!currentThink || currentThink.phase !== phase) {
     finalizeThink();
@@ -140,11 +162,10 @@ function pushReasoning(phase, text) {
     currentThink = { el: div, txt: div.querySelector(".txt"), phase };
   }
   let next = currentThink.txt.textContent + text;
-  if (next.length > 700) next = "…" + next.slice(next.length - 699); // keep it tidy
+  if (next.length > 700) next = "…" + next.slice(next.length - 699);
   currentThink.txt.textContent = next;
   feedScroll();
 }
-
 function setAgent(phase, state) {
   const a = $(`agent-${phase}`);
   if (!a) return;
@@ -163,7 +184,7 @@ function handleEvent(ev) {
     case "phase":
       if (ev.status === "start") {
         setAgent(ev.phase, "active");
-        addLine("phase", `${ev.phase === "scout" ? "🔭" : "🤝"} ${esc(ev.label || ev.phase)} — ${esc(ev.role || "")}`);
+        addLine("phase", `${PHASE_ICON[ev.phase] || "•"} ${esc(ev.label || ev.phase)} — ${esc(ev.role || "")}`);
       } else if (ev.status === "done") {
         setAgent(ev.phase, "done");
       }
@@ -176,7 +197,7 @@ function handleEvent(ev) {
       break;
     case "results": {
       const titles = (ev.titles || []).slice(0, 3).map(esc).join(" · ");
-      addLine("result", `<span class="ic">✓</span><span>Found ${ev.count} listings${titles ? ` <small>${titles}</small>` : ""}</span>`);
+      addLine("result", `<span class="ic">✓</span><span>Found ${ev.count} results${titles ? ` <small>${titles}</small>` : ""}</span>`);
       break;
     }
     case "status":
@@ -202,8 +223,8 @@ function handleEvent(ev) {
 /* ---------------- run the pipeline (SSE) ---------------- */
 async function analyze() {
   const name = $("nameInput").value.trim();
-  if (!name && !selectedImage) {
-    showFormError("Take a photo or type an item name first.");
+  if (!name && !selectedImage && !scannedUPC) {
+    showFormError("Take a photo, scan a barcode, or type an item name first.");
     return;
   }
   hideFormError();
@@ -213,8 +234,13 @@ async function analyze() {
     askingPrice: $("priceInput").value || null,
     condition: $("conditionInput").value || null,
     image: selectedImage || null,
+    upc: scannedUPC || null,
+    deep: $("deepToggle").checked,
   };
   lastPayload = payload;
+
+  // hide the Guru lane if quality mode is off
+  $("agent-guru").classList.toggle("hidden", !payload.deep);
 
   $("analyzeBtn").disabled = true;
   $("results").classList.add("hidden");
@@ -244,15 +270,13 @@ async function analyze() {
         const chunk = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
         const line = chunk.split("\n").find((l) => l.startsWith("data: "));
-        if (line) {
-          try { handleEvent(JSON.parse(line.slice(6))); } catch {}
-        }
+        if (line) { try { handleEvent(JSON.parse(line.slice(6))); } catch {} }
       }
     }
   } catch (e) {
     if (e.name !== "AbortError") showFormError("Network error: " + e.message);
   } finally {
-    if ($("analyzeBtn").disabled) $("analyzeBtn").disabled = false;
+    $("analyzeBtn").disabled = false;
   }
 }
 
@@ -263,24 +287,30 @@ function stopRun() {
 }
 
 function finishRun(data) {
+  lastResult = data;
   $("analyzeBtn").disabled = false;
   document.querySelector(".activity-title").textContent = "Done";
   renderResults(data, lastPayload);
   saveHistory(data);
-  // collapse the feed a moment after results show
   setTimeout(() => $("activity").classList.add("hidden"), 400);
 }
 
 /* ---------------- rendering ---------------- */
-let lastPayload = {};
 const money = (n) =>
   n == null || n === "" || isNaN(n)
     ? "—"
     : "$" + Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
 
-const RATING_LABEL = {
-  great: "Great deal", good: "Good deal", ok: "OK deal", bad: "Bad deal", unknown: "Market read",
-};
+const RATING_LABEL = { great: "Great deal", good: "Good deal", ok: "OK deal", bad: "Bad deal", unknown: "Market read" };
+const TIER_LABEL = { "top-tier": "Top tier", solid: "Solid", "budget-ok": "Budget-OK", chinesium: "Chinesium ⚠️" };
+
+function domainOf(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; }
+}
+function favicon(url) {
+  const d = domainOf(url);
+  return d ? `https://www.google.com/s2/favicons?domain=${encodeURIComponent(d)}&sz=64` : "";
+}
 
 function renderResults(d, payload) {
   payload = payload || {};
@@ -289,7 +319,9 @@ function renderResults(d, payload) {
   const market = d.market || {};
   const product = d.product || {};
   const counter = d.counterOffer || {};
+  const quality = d.quality || null;
   const notes = Array.isArray(d.specialistNotes) ? d.specialistNotes : [];
+  const reviews = Array.isArray(d.reviewSources) ? d.reviewSources : [];
   const sources = Array.isArray(d.sources) ? [...d.sources] : [];
   sources.sort((a, b) => (Number(a.price) || 1e12) - (Number(b.price) || 1e12));
 
@@ -306,6 +338,12 @@ function renderResults(d, payload) {
       ${deal.reasoning ? `<p class="verdict-reason">${esc(deal.reasoning)}</p>` : ""}
     </div>
     ${score != null ? `<div class="gauge" data-score="${score}"><div class="gauge-num"><b>${score}</b><small>SCORE</small></div></div>` : ""}
+  </div>`;
+
+  // action bar (share)
+  html += `<div class="action-bar">
+    <button class="ghost-btn small" id="shareBtn">📤 Share</button>
+    ${sources[0] && sources[0].url ? `<a class="ghost-btn small" href="${esc(sources[0].url)}" target="_blank" rel="noopener">↗ Cheapest online</a>` : ""}
   </div>`;
 
   // price summary
@@ -326,6 +364,35 @@ function renderResults(d, payload) {
     }
   </div>`;
 
+  // quality (Gun Guru)
+  if (quality && quality.tier) {
+    const tier = String(quality.tier).toLowerCase();
+    html += `<div class="card">
+      <div class="section-title">🧠 Gun Guru — quality check</div>
+      <div class="quality-head">
+        <span class="tier tier-${esc(tier)}">${esc(TIER_LABEL[tier] || tier)}</span>
+        ${quality.score != null ? `<span class="tier-score">${Math.round(quality.score)}<small>/100</small></span>` : ""}
+      </div>
+      ${quality.verdict ? `<p class="muted-p" style="margin-top:6px">${esc(quality.verdict)}</p>` : ""}
+      ${
+        Array.isArray(quality.pros) && quality.pros.length
+          ? `<ul class="pc pros">${quality.pros.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""
+      }
+      ${
+        Array.isArray(quality.cons) && quality.cons.length
+          ? `<ul class="pc cons">${quality.cons.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""
+      }
+      ${
+        Array.isArray(quality.knownIssues) && quality.knownIssues.length
+          ? `<p class="muted-p"><b>Known issues:</b> ${quality.knownIssues.map(esc).join("; ")}</p>` : ""
+      }
+      ${
+        Array.isArray(quality.alternatives) && quality.alternatives.length
+          ? `<div class="alts"><b>Consider instead:</b>${quality.alternatives.map((a) => `<div class="alt"><b>${esc(a.name)}</b> — ${esc(a.why)}</div>`).join("")}</div>` : ""
+      }
+    </div>`;
+  }
+
   // counter offer playbook
   html += `<div class="card counter">
     <div class="section-title">💬 Counter-offer playbook</div>
@@ -345,25 +412,50 @@ function renderResults(d, payload) {
     </div>`;
   }
 
-  // sources
+  // price sources (verifiable links)
   if (sources.length) {
     html += `<div class="card">
-      <div class="section-title">Price sources (${sources.length})</div>
+      <div class="section-title">Price sources — tap to verify (${sources.length})</div>
       <div class="sources">
         ${sources
           .map((s, i) => {
             const cond = (s.condition || "").toLowerCase() === "used" ? "used" : "new";
             const cheap = i === 0 ? "src-cheapest" : "";
+            const dom = s.url ? domainOf(s.url) : "";
+            const fav = s.url ? `<img class="fav" src="${esc(favicon(s.url))}" alt="" loading="lazy" onerror="this.style.display='none'"/>` : `<span class="src-rank">${i + 1}</span>`;
             const inner = `
-              <div class="src-rank">${i + 1}</div>
+              ${fav}
               <div class="src-main">
-                <div class="src-store">${esc(s.store || "Store")}<span class="badge ${cond}">${cond}</span></div>
+                <div class="src-store">${esc(s.store || dom || "Store")}<span class="badge ${cond}">${cond}</span></div>
                 <div class="src-title">${esc(s.title || "")}${s.inStock === false ? " · out of stock" : ""}</div>
+                ${dom ? `<div class="src-dom">${esc(dom)} ↗</div>` : `<div class="src-dom no-link">no direct link</div>`}
               </div>
               <div class="src-price">${money(s.price)}</div>`;
             return s.url
               ? `<a class="src ${cheap}" href="${esc(s.url)}" target="_blank" rel="noopener">${inner}</a>`
               : `<div class="src ${cheap}">${inner}</div>`;
+          })
+          .join("")}
+      </div>
+    </div>`;
+  }
+
+  // review sources
+  if (reviews.length) {
+    html += `<div class="card">
+      <div class="section-title">📚 Reviews &amp; threads</div>
+      <div class="sources">
+        ${reviews
+          .map((r) => {
+            const dom = domainOf(r.url);
+            return `<a class="src" href="${esc(r.url)}" target="_blank" rel="noopener">
+              <img class="fav" src="${esc(favicon(r.url))}" alt="" loading="lazy" onerror="this.style.display='none'"/>
+              <div class="src-main">
+                <div class="src-store">${esc(r.source || dom)}</div>
+                <div class="src-title">${esc(r.title || "")}</div>
+              </div>
+              <div class="src-dom">↗</div>
+            </a>`;
           })
           .join("")}
       </div>
@@ -379,8 +471,7 @@ function renderResults(d, payload) {
       ${product.msrp ? `<p class="muted-p">MSRP: ${money(product.msrp)}</p>` : ""}
       ${
         Array.isArray(product.specs) && product.specs.length
-          ? `<ul class="specs">${product.specs.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>`
-          : ""
+          ? `<ul class="specs">${product.specs.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""
       }
     </div>`;
   }
@@ -401,25 +492,52 @@ function renderResults(d, payload) {
     </div>`;
   }
 
-  if (d._meta && d._meta.searchUnavailable) {
-    html += `<p class="notice">Live web search wasn't available on this key — prices are model estimates. Verify before buying.</p>`;
-  }
-
   html += `<button class="primary-btn new-search" onclick="window.scrollTo({top:0,behavior:'smooth'})"><span class="btn-label">↑ New search</span></button>`;
 
   $("results").innerHTML = html;
   $("results").classList.remove("hidden");
   $("results").scrollIntoView({ behavior: "smooth", block: "start" });
 
-  // animate the gauge ring
   const g = $("results").querySelector(".gauge");
   if (g) requestAnimationFrame(() => g.style.setProperty("--p", g.dataset.score));
+  const sb = $("shareBtn");
+  if (sb) sb.addEventListener("click", shareResult);
+}
+
+/* ---------------- share ---------------- */
+function shareResult() {
+  const d = lastResult || {};
+  const deal = d.deal || {};
+  const m = d.market || {};
+  const c = d.counterOffer || {};
+  const lines = [
+    `${(d.product && d.product.name) || "Item"} — ${RATING_LABEL[(deal.rating || "unknown")] || ""}`,
+    lastPayload.askingPrice ? `Asking: ${money(lastPayload.askingPrice)}` : null,
+    m.fairPrice ? `Fair price: ${money(m.fairPrice)}` : null,
+    c.targetPrice ? `Offer: ${money(c.targetPrice)} (walk above ${money(c.walkAwayPrice)})` : null,
+    d.quality && d.quality.tier ? `Quality: ${TIER_LABEL[d.quality.tier] || d.quality.tier}` : null,
+    deal.headline ? `“${deal.headline}”` : null,
+  ].filter(Boolean);
+  const text = lines.join("\n");
+  if (navigator.share) {
+    navigator.share({ title: "Gun Show Deal Finder", text }).catch(() => {});
+  } else if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(() => toast("Copied to clipboard")).catch(() => toast("Couldn't copy"));
+  } else {
+    toast("Sharing not supported");
+  }
+}
+
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.remove("hidden");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.add("hidden"), 1800);
 }
 
 /* ---------------- history ---------------- */
-function loadHistory() {
-  try { return JSON.parse(localStorage.getItem(HIST_STORE) || "[]"); } catch { return []; }
-}
+function loadHistory() { try { return JSON.parse(localStorage.getItem(HIST_STORE) || "[]"); } catch { return []; } }
 function saveHistory(d) {
   const hist = loadHistory();
   hist.unshift({
@@ -475,6 +593,7 @@ function hideFormError() { $("formError").classList.add("hidden"); }
 
 /* ---------------- wire up ---------------- */
 $("cameraInput").addEventListener("change", (e) => onImageChosen(e.target.files[0]));
+$("barcodeInput").addEventListener("change", (e) => onImageChosen(e.target.files[0], { barcode: true }));
 $("galleryInput").addEventListener("change", (e) => onImageChosen(e.target.files[0]));
 $("clearThumb").addEventListener("click", clearImage);
 $("analyzeBtn").addEventListener("click", analyze);
@@ -490,7 +609,10 @@ $("saveKey").addEventListener("click", () => {
 });
 $("clearHistory").addEventListener("click", () => { localStorage.removeItem(HIST_STORE); renderHistory(); });
 $("nameInput").addEventListener("keydown", (e) => { if (e.key === "Enter") analyze(); });
+$("deepToggle").addEventListener("change", (e) => localStorage.setItem(DEEP_STORE, e.target.checked ? "1" : "0"));
 
+// restore deep-mode preference
+if (localStorage.getItem(DEEP_STORE) === "0") $("deepToggle").checked = false;
 renderHistory();
 
 (async () => {
