@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
-  <meta name="theme-color" content="#0f1216" />
+  <meta name="theme-color" content="#0a0c10" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Deal Finder" />
@@ -14,12 +14,14 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <div class="bg-glow" aria-hidden="true"></div>
+
   <header class="topbar">
     <div class="brand">
       <span class="logo" aria-hidden="true">🎯</span>
       <div>
         <h1>Deal Finder</h1>
-        <p class="tag">Guns, parts, optics &amp; ammo — priced &amp; countered.</p>
+        <p class="tag">AI scout + deal specialist for the show floor</p>
       </div>
     </div>
     <button id="settingsBtn" class="icon-btn" aria-label="Settings">⚙️</button>
@@ -76,21 +78,35 @@
       </div>
 
       <button id="analyzeBtn" class="primary-btn">
-        <span class="btn-label">Find best deal</span>
+        <span class="btn-shine"></span>
+        <span class="btn-label">⚡ Run the deal check</span>
       </button>
       <p id="formError" class="form-error hidden"></p>
     </section>
 
-    <!-- LOADING -->
-    <section id="loading" class="card loading hidden">
-      <div class="spinner"></div>
-      <p id="loadingMsg">Searching reputable stores…</p>
-      <ul id="loadingSteps" class="steps">
-        <li data-step="0">Identifying the item</li>
-        <li data-step="1">Pricing across new &amp; used sources</li>
-        <li data-step="2">Averaging a fair price</li>
-        <li data-step="3">Scoring the deal &amp; counter-offer</li>
-      </ul>
+    <!-- LIVE AGENT ACTIVITY -->
+    <section id="activity" class="card activity hidden">
+      <div class="activity-head">
+        <span class="live-dot"></span>
+        <span class="activity-title">Agents working…</span>
+        <button id="cancelRun" class="link-btn">Stop</button>
+      </div>
+
+      <div class="agents">
+        <div class="agent" id="agent-scout">
+          <span class="agent-avatar">🔭</span>
+          <div class="agent-meta"><b>The Scout</b><small>Finds real prices</small></div>
+          <span class="agent-state" data-state="idle"></span>
+        </div>
+        <div class="agent-arrow">→</div>
+        <div class="agent" id="agent-specialist">
+          <span class="agent-avatar">🤝</span>
+          <div class="agent-meta"><b>Deal Specialist</b><small>Verdict &amp; counter</small></div>
+          <span class="agent-state" data-state="idle"></span>
+        </div>
+      </div>
+
+      <div id="feed" class="feed"></div>
     </section>
 
     <!-- RESULTS -->
@@ -117,10 +133,10 @@
       </div>
       <div id="keyStatus" class="key-status"></div>
       <div class="modal-actions">
-        <button id="saveKey" class="primary-btn small">Save</button>
+        <button id="saveKey" class="primary-btn small"><span class="btn-label">Save</span></button>
         <button id="closeSettings" class="ghost-btn small">Close</button>
       </div>
-      <p class="about">Powered by Claude Sonnet 4.6 with live web search. For research only — verify prices and follow all laws before buying.</p>
+      <p class="about">Two-agent pipeline on Claude Sonnet 4.6 with live web search: <b>The Scout</b> prices it, the <b>Gun Show Deal Specialist</b> calls the deal &amp; counter. Research only — verify prices and follow all laws before buying.</p>
     </div>
   </div>
 

@@ -6,6 +6,7 @@ const HIST_STORE = "gsdf_history";
 
 let selectedImage = null; // data URL
 let identifying = false;
+let runController = null;
 
 /* ---------------- image handling ---------------- */
 async function fileToResizedDataUrl(file, maxDim = 1280, quality = 0.82) {
@@ -45,7 +46,6 @@ async function onImageChosen(file) {
   $("thumb").src = selectedImage;
   $("thumbWrap").classList.remove("hidden");
   $("idStatus").textContent = "";
-  // auto-identify to prefill the name
   identify();
 }
 
@@ -84,9 +84,7 @@ async function identify() {
       if (!$("nameInput").value.trim()) $("nameInput").value = data.name;
       const conf = data.confidence ? ` · ${data.confidence} confidence` : "";
       $("idStatus").textContent = `✓ ${data.name}${conf}`;
-      if (data.observedPrice && !$("priceInput").value) {
-        $("priceInput").value = data.observedPrice;
-      }
+      if (data.observedPrice && !$("priceInput").value) $("priceInput").value = data.observedPrice;
     } else {
       $("idStatus").textContent = "Couldn't ID it — type the name";
     }
@@ -97,29 +95,111 @@ async function identify() {
   }
 }
 
-let stepTimer = null;
-function runSteps() {
-  const steps = [...document.querySelectorAll("#loadingSteps li")];
-  steps.forEach((s) => s.classList.remove("active", "done"));
-  let i = 0;
-  steps[0]?.classList.add("active");
-  stepTimer = setInterval(() => {
-    if (i < steps.length - 1) {
-      steps[i].classList.remove("active");
-      steps[i].classList.add("done");
-      i++;
-      steps[i].classList.add("active");
-    }
-  }, 4500);
-}
-function stopSteps() {
-  clearInterval(stepTimer);
-  document.querySelectorAll("#loadingSteps li").forEach((s) => {
-    s.classList.remove("active");
-    s.classList.add("done");
+/* ---------------- live activity feed ---------------- */
+let currentThink = null; // { el, txt, phase }
+
+function resetFeed() {
+  $("feed").innerHTML = "";
+  currentThink = null;
+  ["scout", "specialist"].forEach((p) => {
+    const a = $(`agent-${p}`);
+    a.classList.remove("active", "done");
   });
 }
 
+function feedScroll() {
+  const f = $("feed");
+  f.scrollTop = f.scrollHeight;
+}
+
+function finalizeThink() {
+  if (currentThink) {
+    const c = currentThink.el.querySelector(".cursor");
+    if (c) c.remove();
+    currentThink = null;
+  }
+}
+
+function addLine(cls, html) {
+  finalizeThink();
+  const div = document.createElement("div");
+  div.className = `feed-line ${cls}`;
+  div.innerHTML = html;
+  $("feed").appendChild(div);
+  feedScroll();
+  return div;
+}
+
+function pushReasoning(phase, text) {
+  if (!currentThink || currentThink.phase !== phase) {
+    finalizeThink();
+    const div = document.createElement("div");
+    div.className = "feed-line think";
+    div.innerHTML = `<span class="ic">💭</span><span class="txt"></span><span class="cursor"></span>`;
+    $("feed").appendChild(div);
+    currentThink = { el: div, txt: div.querySelector(".txt"), phase };
+  }
+  let next = currentThink.txt.textContent + text;
+  if (next.length > 700) next = "…" + next.slice(next.length - 699); // keep it tidy
+  currentThink.txt.textContent = next;
+  feedScroll();
+}
+
+function setAgent(phase, state) {
+  const a = $(`agent-${phase}`);
+  if (!a) return;
+  if (state === "active") { a.classList.add("active"); a.classList.remove("done"); }
+  else if (state === "done") { a.classList.remove("active"); a.classList.add("done"); }
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+  );
+}
+
+function handleEvent(ev) {
+  switch (ev.t) {
+    case "phase":
+      if (ev.status === "start") {
+        setAgent(ev.phase, "active");
+        addLine("phase", `${ev.phase === "scout" ? "🔭" : "🤝"} ${esc(ev.label || ev.phase)} — ${esc(ev.role || "")}`);
+      } else if (ev.status === "done") {
+        setAgent(ev.phase, "done");
+      }
+      break;
+    case "reasoning":
+      pushReasoning(ev.phase, ev.text);
+      break;
+    case "search":
+      addLine("search", `<span class="ic">🔎</span><span>Searching: ${esc(ev.query)}</span>`);
+      break;
+    case "results": {
+      const titles = (ev.titles || []).slice(0, 3).map(esc).join(" · ");
+      addLine("result", `<span class="ic">✓</span><span>Found ${ev.count} listings${titles ? ` <small>${titles}</small>` : ""}</span>`);
+      break;
+    }
+    case "status":
+      addLine("think", `<span class="ic">⚙️</span><span>${esc(ev.text)}</span>`);
+      break;
+    case "done":
+      finalizeThink();
+      finishRun(ev.data);
+      break;
+    case "error":
+      finalizeThink();
+      stopRun();
+      if (ev.error === "missing_key") {
+        openSettings();
+        showFormError("Add your Anthropic API key in ⚙️ Settings to search.");
+      } else {
+        showFormError("Search failed: " + (ev.detail || ev.error));
+      }
+      break;
+  }
+}
+
+/* ---------------- run the pipeline (SSE) ---------------- */
 async function analyze() {
   const name = $("nameInput").value.trim();
   if (!name && !selectedImage) {
@@ -134,72 +214,82 @@ async function analyze() {
     condition: $("conditionInput").value || null,
     image: selectedImage || null,
   };
+  lastPayload = payload;
 
   $("analyzeBtn").disabled = true;
   $("results").classList.add("hidden");
   $("results").innerHTML = "";
-  $("loading").classList.remove("hidden");
-  runSteps();
-  $("loading").scrollIntoView({ behavior: "smooth", block: "center" });
+  resetFeed();
+  $("activity").classList.remove("hidden");
+  document.querySelector(".activity-title").textContent = "Agents working…";
+  $("activity").scrollIntoView({ behavior: "smooth", block: "center" });
 
+  runController = new AbortController();
   try {
-    const r = await fetch("/api/analyze", {
+    const resp = await fetch("/api/analyze/stream", {
       method: "POST",
       headers: apiHeaders(),
       body: JSON.stringify(payload),
+      signal: runController.signal,
     });
-    if (r.status === 401) {
-      stopLoading();
-      openSettings();
-      showFormError("Add your Anthropic API key in ⚙️ Settings to search.");
-      return;
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+        if (line) {
+          try { handleEvent(JSON.parse(line.slice(6))); } catch {}
+        }
+      }
     }
-    const data = await r.json();
-    stopLoading();
-    if (data.error) {
-      showFormError("Search failed: " + (data.detail || data.error));
-      return;
-    }
-    renderResults(data, payload);
-    saveHistory(data);
   } catch (e) {
-    stopLoading();
-    showFormError("Network error: " + e.message);
+    if (e.name !== "AbortError") showFormError("Network error: " + e.message);
+  } finally {
+    if ($("analyzeBtn").disabled) $("analyzeBtn").disabled = false;
   }
 }
 
-function stopLoading() {
-  stopSteps();
-  $("loading").classList.add("hidden");
+function stopRun() {
+  if (runController) { try { runController.abort(); } catch {} runController = null; }
   $("analyzeBtn").disabled = false;
+  $("activity").classList.add("hidden");
+}
+
+function finishRun(data) {
+  $("analyzeBtn").disabled = false;
+  document.querySelector(".activity-title").textContent = "Done";
+  renderResults(data, lastPayload);
+  saveHistory(data);
+  // collapse the feed a moment after results show
+  setTimeout(() => $("activity").classList.add("hidden"), 400);
 }
 
 /* ---------------- rendering ---------------- */
+let lastPayload = {};
 const money = (n) =>
   n == null || n === "" || isNaN(n)
     ? "—"
     : "$" + Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
 
 const RATING_LABEL = {
-  great: "Great deal",
-  good: "Good deal",
-  ok: "OK deal",
-  bad: "Bad deal",
-  unknown: "No asking price",
+  great: "Great deal", good: "Good deal", ok: "OK deal", bad: "Bad deal", unknown: "Market read",
 };
 
-function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
-  );
-}
-
 function renderResults(d, payload) {
+  payload = payload || {};
   const deal = d.deal || {};
   const rating = (deal.rating || "unknown").toLowerCase();
   const market = d.market || {};
   const product = d.product || {};
   const counter = d.counterOffer || {};
+  const notes = Array.isArray(d.specialistNotes) ? d.specialistNotes : [];
   const sources = Array.isArray(d.sources) ? [...d.sources] : [];
   sources.sort((a, b) => (Number(a.price) || 1e12) - (Number(b.price) || 1e12));
 
@@ -208,16 +298,14 @@ function renderResults(d, payload) {
 
   let html = "";
 
-  // verdict
+  // verdict + gauge
   html += `<div class="verdict ${esc(rating)}">
-    <div class="verdict-top">
-      <div>
-        <div class="verdict-rating">${esc(RATING_LABEL[rating] || rating)}</div>
-        <h2 class="verdict-headline">${esc(deal.headline || product.name || "Result")}</h2>
-      </div>
-      ${score != null ? `<div class="verdict-score"><b>${score}</b><small>/100</small></div>` : ""}
+    <div class="verdict-body">
+      <div class="verdict-rating">${esc(RATING_LABEL[rating] || rating)}</div>
+      <h2 class="verdict-headline">${esc(deal.headline || product.name || "Result")}</h2>
+      ${deal.reasoning ? `<p class="verdict-reason">${esc(deal.reasoning)}</p>` : ""}
     </div>
-    ${deal.reasoning ? `<p class="verdict-reason">${esc(deal.reasoning)}</p>` : ""}
+    ${score != null ? `<div class="gauge" data-score="${score}"><div class="gauge-num"><b>${score}</b><small>SCORE</small></div></div>` : ""}
   </div>`;
 
   // price summary
@@ -238,6 +326,50 @@ function renderResults(d, payload) {
     }
   </div>`;
 
+  // counter offer playbook
+  html += `<div class="card counter">
+    <div class="section-title">💬 Counter-offer playbook</div>
+    <div class="co-prices">
+      <div class="co-box target"><small>Offer this</small><b>${money(counter.targetPrice)}</b></div>
+      <div class="co-box walk"><small>Walk away above</small><b>${money(counter.walkAwayPrice)}</b></div>
+    </div>
+    ${counter.script ? `<div class="script">“${esc(counter.script)}”</div>` : ""}
+    ${counter.reasoning ? `<p class="muted-p">${esc(counter.reasoning)}</p>` : ""}
+  </div>`;
+
+  // specialist tactical notes
+  if (notes.length) {
+    html += `<div class="card">
+      <div class="section-title">🤝 Specialist's playbook</div>
+      <ul class="notes-list">${notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>
+    </div>`;
+  }
+
+  // sources
+  if (sources.length) {
+    html += `<div class="card">
+      <div class="section-title">Price sources (${sources.length})</div>
+      <div class="sources">
+        ${sources
+          .map((s, i) => {
+            const cond = (s.condition || "").toLowerCase() === "used" ? "used" : "new";
+            const cheap = i === 0 ? "src-cheapest" : "";
+            const inner = `
+              <div class="src-rank">${i + 1}</div>
+              <div class="src-main">
+                <div class="src-store">${esc(s.store || "Store")}<span class="badge ${cond}">${cond}</span></div>
+                <div class="src-title">${esc(s.title || "")}${s.inStock === false ? " · out of stock" : ""}</div>
+              </div>
+              <div class="src-price">${money(s.price)}</div>`;
+            return s.url
+              ? `<a class="src ${cheap}" href="${esc(s.url)}" target="_blank" rel="noopener">${inner}</a>`
+              : `<div class="src ${cheap}">${inner}</div>`;
+          })
+          .join("")}
+      </div>
+    </div>`;
+  }
+
   // product
   if (product.summary || (product.specs && product.specs.length)) {
     html += `<div class="card">
@@ -252,41 +384,6 @@ function renderResults(d, payload) {
       }
     </div>`;
   }
-
-  // sources
-  if (sources.length) {
-    html += `<div class="card">
-      <div class="section-title">Price sources (${sources.length})</div>
-      <div class="sources">
-        ${sources
-          .map((s, i) => {
-            const cond = (s.condition || "").toLowerCase() === "used" ? "used" : "new";
-            const cheap = i === 0 ? "src-cheapest" : "";
-            const inner = `
-              <div class="src-main">
-                <div class="src-store">${esc(s.store || "Store")} <span class="badge ${cond}">${cond}</span></div>
-                <div class="src-title">${esc(s.title || "")}${s.inStock === false ? " · out of stock" : ""}</div>
-              </div>
-              <div class="src-price">${money(s.price)}</div>`;
-            return s.url
-              ? `<a class="src ${cheap}" href="${esc(s.url)}" target="_blank" rel="noopener">${inner}</a>`
-              : `<div class="src ${cheap}">${inner}</div>`;
-          })
-          .join("")}
-      </div>
-    </div>`;
-  }
-
-  // counter offer
-  html += `<div class="card counter">
-    <div class="section-title">💬 Counter-offer playbook</div>
-    <div class="co-prices">
-      <div class="co-box target"><small>Offer this</small><b>${money(counter.targetPrice)}</b></div>
-      <div class="co-box walk"><small>Walk away above</small><b>${money(counter.walkAwayPrice)}</b></div>
-    </div>
-    ${counter.script ? `<div class="script">“${esc(counter.script)}”</div>` : ""}
-    ${counter.reasoning ? `<p class="muted-p">${esc(counter.reasoning)}</p>` : ""}
-  </div>`;
 
   // used vs new
   if (d.usedVsNew) {
@@ -308,20 +405,20 @@ function renderResults(d, payload) {
     html += `<p class="notice">Live web search wasn't available on this key — prices are model estimates. Verify before buying.</p>`;
   }
 
-  html += `<button class="primary-btn new-search" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑ New search</button>`;
+  html += `<button class="primary-btn new-search" onclick="window.scrollTo({top:0,behavior:'smooth'})"><span class="btn-label">↑ New search</span></button>`;
 
   $("results").innerHTML = html;
   $("results").classList.remove("hidden");
   $("results").scrollIntoView({ behavior: "smooth", block: "start" });
+
+  // animate the gauge ring
+  const g = $("results").querySelector(".gauge");
+  if (g) requestAnimationFrame(() => g.style.setProperty("--p", g.dataset.score));
 }
 
 /* ---------------- history ---------------- */
 function loadHistory() {
-  try {
-    return JSON.parse(localStorage.getItem(HIST_STORE) || "[]");
-  } catch {
-    return [];
-  }
+  try { return JSON.parse(localStorage.getItem(HIST_STORE) || "[]"); } catch { return []; }
 }
 function saveHistory(d) {
   const hist = loadHistory();
@@ -337,10 +434,7 @@ function saveHistory(d) {
 function renderHistory() {
   const hist = loadHistory();
   const sec = $("historySection");
-  if (!hist.length) {
-    sec.classList.add("hidden");
-    return;
-  }
+  if (!hist.length) { sec.classList.add("hidden"); return; }
   sec.classList.remove("hidden");
   $("historyList").innerHTML = hist
     .map((h) => {
@@ -360,66 +454,45 @@ function openSettings() {
   updateKeyStatus();
   $("settingsModal").classList.remove("hidden");
 }
-function closeSettings() {
-  $("settingsModal").classList.add("hidden");
-}
+function closeSettings() { $("settingsModal").classList.add("hidden"); }
 async function updateKeyStatus() {
   const el = $("keyStatus");
   try {
     const h = await (await fetch("/api/health")).json();
     if (localStorage.getItem(KEY_STORE)) {
-      el.textContent = "✓ Using your saved key on this device.";
-      el.className = "key-status ok";
+      el.textContent = "✓ Using your saved key on this device."; el.className = "key-status ok";
     } else if (h.hasServerKey) {
-      el.textContent = "✓ Server key detected — you're ready to go.";
-      el.className = "key-status ok";
+      el.textContent = "✓ Server key detected — you're ready to go."; el.className = "key-status ok";
     } else {
-      el.textContent = "⚠️ No key set. Paste one to start searching.";
-      el.className = "key-status warn";
+      el.textContent = "⚠️ No key set. Paste one to start searching."; el.className = "key-status warn";
     }
-  } catch {
-    el.textContent = "";
-  }
+  } catch { el.textContent = ""; }
 }
 
 /* ---------------- form helpers ---------------- */
-function showFormError(msg) {
-  const e = $("formError");
-  e.textContent = msg;
-  e.classList.remove("hidden");
-}
-function hideFormError() {
-  $("formError").classList.add("hidden");
-}
+function showFormError(msg) { const e = $("formError"); e.textContent = msg; e.classList.remove("hidden"); }
+function hideFormError() { $("formError").classList.add("hidden"); }
 
 /* ---------------- wire up ---------------- */
 $("cameraInput").addEventListener("change", (e) => onImageChosen(e.target.files[0]));
 $("galleryInput").addEventListener("change", (e) => onImageChosen(e.target.files[0]));
 $("clearThumb").addEventListener("click", clearImage);
 $("analyzeBtn").addEventListener("click", analyze);
+$("cancelRun").addEventListener("click", stopRun);
 $("settingsBtn").addEventListener("click", openSettings);
 $("closeSettings").addEventListener("click", closeSettings);
-$("settingsModal").addEventListener("click", (e) => {
-  if (e.target === $("settingsModal")) closeSettings();
-});
+$("settingsModal").addEventListener("click", (e) => { if (e.target === $("settingsModal")) closeSettings(); });
 $("saveKey").addEventListener("click", () => {
   const v = $("keyInput").value.trim();
-  if (v) localStorage.setItem(KEY_STORE, v);
-  else localStorage.removeItem(KEY_STORE);
+  if (v) localStorage.setItem(KEY_STORE, v); else localStorage.removeItem(KEY_STORE);
   updateKeyStatus();
   setTimeout(closeSettings, 600);
 });
-$("clearHistory").addEventListener("click", () => {
-  localStorage.removeItem(HIST_STORE);
-  renderHistory();
-});
-$("nameInput").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") analyze();
-});
+$("clearHistory").addEventListener("click", () => { localStorage.removeItem(HIST_STORE); renderHistory(); });
+$("nameInput").addEventListener("keydown", (e) => { if (e.key === "Enter") analyze(); });
 
 renderHistory();
 
-// first-run: nudge to settings if no key anywhere
 (async () => {
   try {
     const h = await (await fetch("/api/health")).json();
@@ -427,7 +500,6 @@ renderHistory();
   } catch {}
 })();
 
-// service worker for installable PWA + fast loads
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
 }
