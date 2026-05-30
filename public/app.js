@@ -4,6 +4,8 @@ const $ = (id) => document.getElementById(id);
 const KEY_STORE = "gsdf_api_key";
 const HIST_STORE = "gsdf_history";
 const DEEP_STORE = "gsdf_deep";
+const TAX_STORE = "gsdf_tax";
+const FFL_STORE = "gsdf_ffl";
 
 let selectedImage = null; // data URL
 let scannedUPC = null;
@@ -317,6 +319,8 @@ async function analyze() {
     image: selectedImage || null,
     upc: scannedUPC || null,
     deep: $("deepToggle").checked,
+    salesTaxPct: localStorage.getItem(TAX_STORE) || null,
+    fflFee: localStorage.getItem(FFL_STORE) || null,
   };
   lastPayload = payload;
 
@@ -331,6 +335,8 @@ async function analyze() {
   document.querySelector(".activity-title").textContent = "Agents working…";
   $("activity").scrollIntoView({ behavior: "smooth", block: "center" });
 
+  let gotResult = false;
+  let streamWorked = false;
   runController = new AbortController();
   try {
     const resp = await fetch("/api/analyze/stream", {
@@ -339,25 +345,69 @@ async function analyze() {
       body: JSON.stringify(payload),
       signal: runController.signal,
     });
+    if (!resp.ok || !resp.body) throw new Error("stream unavailable (" + resp.status + ")");
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      streamWorked = true;
       buf += decoder.decode(value, { stream: true });
       let idx;
       while ((idx = buf.indexOf("\n\n")) >= 0) {
         const chunk = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
         const line = chunk.split("\n").find((l) => l.startsWith("data: "));
-        if (line) { try { handleEvent(JSON.parse(line.slice(6))); } catch {} }
+        if (line) {
+          let ev;
+          try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+          if (ev.t === "done") gotResult = true;
+          handleEvent(ev);
+        }
       }
     }
+    // Stream ended without delivering a result → fall back to a plain request.
+    if (!gotResult) await analyzeFallback(payload);
   } catch (e) {
-    if (e.name !== "AbortError") showFormError("Network error: " + e.message);
+    if (e.name === "AbortError") return;
+    // Streaming failed entirely (network/proxy/Safari) → reliable non-streaming path.
+    await analyzeFallback(payload, !streamWorked);
   } finally {
     $("analyzeBtn").disabled = false;
+  }
+}
+
+// Reliable fallback: one normal POST that returns the full result. Works on
+// networks/browsers where Server-Sent Events get buffered or dropped.
+async function analyzeFallback(payload, quiet) {
+  try {
+    if (!quiet) addLine("status", `<span class="ic">⚙️</span><span>Live view unavailable — finishing the analysis…</span>`);
+    document.querySelector(".activity-title").textContent = "Working… (this can take ~30–60s)";
+    ["scout", "guru", "specialist"].forEach((p) => {
+      if (p !== "guru" || payload.deep) setAgent(p, "active");
+    });
+    const resp = await fetch("/api/analyze", {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) {
+      stopRun();
+      if (data.error === "missing_key" || resp.status === 401) {
+        openSettings();
+        showFormError("Add your Anthropic API key in ⚙️ Settings to search.");
+      } else {
+        showFormError("Search failed: " + (data.detail || data.error || resp.status));
+      }
+      return;
+    }
+    ["scout", "guru", "specialist"].forEach((p) => setAgent(p, "done"));
+    finishRun(data);
+  } catch (e) {
+    stopRun();
+    showFormError("Couldn't reach the server. Check your connection and try again.");
   }
 }
 
@@ -444,6 +494,25 @@ function renderResults(d, payload) {
         : ""
     }
   </div>`;
+
+  // out-the-door comparison
+  const otd = d.otd || null;
+  if (otd && (otd.tableOTD != null || otd.onlineOTD != null)) {
+    const cheaper = (otd.cheaper || "").toLowerCase();
+    html += `<div class="card">
+      <div class="section-title">🚪 Out-the-door — true cost</div>
+      <div class="co-prices">
+        <div class="co-box ${cheaper === "table" ? "target" : ""}"><small>At the table (cash)</small><b>${money(otd.tableOTD)}</b></div>
+        <div class="co-box ${cheaper === "online" ? "target" : ""}"><small>Cheapest online +ship/tax${product.category === "firearm" ? "/FFL" : ""}</small><b>${money(otd.onlineOTD)}</b></div>
+      </div>
+      ${
+        cheaper && otd.delta != null
+          ? `<p class="muted-p"><b>${cheaper === "even" ? "About even" : (cheaper === "table" ? "Table wins" : "Online wins")}</b>${cheaper !== "even" ? ` by ${money(otd.delta)}` : ""}.</p>`
+          : ""
+      }
+      ${otd.explanation ? `<p class="muted-p">${esc(otd.explanation)}</p>` : ""}
+    </div>`;
+  }
 
   // quality (Gun Guru)
   if (quality && quality.tier) {
@@ -650,6 +719,8 @@ function renderHistory() {
 /* ---------------- settings ---------------- */
 function openSettings() {
   $("keyInput").value = localStorage.getItem(KEY_STORE) || "";
+  $("taxInput").value = localStorage.getItem(TAX_STORE) || "";
+  $("fflInput").value = localStorage.getItem(FFL_STORE) || "";
   updateKeyStatus();
   $("settingsModal").classList.remove("hidden");
 }
@@ -687,6 +758,10 @@ $("settingsModal").addEventListener("click", (e) => { if (e.target === $("settin
 $("saveKey").addEventListener("click", () => {
   const v = $("keyInput").value.trim();
   if (v) localStorage.setItem(KEY_STORE, v); else localStorage.removeItem(KEY_STORE);
+  const tax = $("taxInput").value.trim();
+  if (tax) localStorage.setItem(TAX_STORE, tax); else localStorage.removeItem(TAX_STORE);
+  const ffl = $("fflInput").value.trim();
+  if (ffl) localStorage.setItem(FFL_STORE, ffl); else localStorage.removeItem(FFL_STORE);
   updateKeyStatus();
   setTimeout(closeSettings, 600);
 });

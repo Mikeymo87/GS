@@ -147,6 +147,20 @@
         <p class="hint">Stored only on this device. Leave blank to use the server's key.</p>
       </div>
       <div id="keyStatus" class="key-status"></div>
+
+      <div class="section-title" style="margin-top:6px">Out-the-door defaults</div>
+      <p class="hint" style="margin-bottom:8px">Used to compare the table price vs. buying online. Saved on this device.</p>
+      <div class="grid-2">
+        <div class="field">
+          <label for="taxInput">Your sales tax %</label>
+          <input id="taxInput" type="number" inputmode="decimal" min="0" max="15" step="0.1" placeholder="e.g. 8.25" />
+        </div>
+        <div class="field">
+          <label for="fflInput">FFL transfer fee $</label>
+          <input id="fflInput" type="number" inputmode="decimal" min="0" step="1" placeholder="e.g. 30" />
+        </div>
+      </div>
+
       <div class="modal-actions">
         <button id="saveKey" class="primary-btn small"><span class="btn-label">Save</span></button>
         <button id="closeSettings" class="ghost-btn small">Close</button>

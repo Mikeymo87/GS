@@ -112,7 +112,11 @@ Dockerfile             Railway/Fly/any Docker host
   lacks thinking/search.
 - **Live barcode scanner**: real-time camera scan via `BarcodeDetector` (Android/desktop) with a ZXing
   fallback for iOS Safari; vision-reads the label if the camera is blocked.
-- Reasoning, search queries, and result counts stream to the browser over **Server-Sent Events**.
+- Reasoning, search queries, and result counts stream to the browser over **Server-Sent Events**,
+  with an automatic fallback to a plain `/api/analyze` request when streaming is blocked (some mobile
+  networks/proxies/Safari) — so the deal check always completes.
+- **Out-the-door (OTD) calculator**: set your sales-tax % and FFL transfer fee once in ⚙️ Settings; every
+  result shows the true table-cash price vs. cheapest-online + shipping + tax (+ FFL for firearms).
 - Photos are resized client-side (≤1280px JPEG) before upload. No database — history lives in the browser.
 
 ### Cost per lookup (estimate)
