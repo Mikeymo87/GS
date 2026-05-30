@@ -601,8 +601,11 @@ app.post("/api/analyze/stream", async (req, res) => {
   const t0 = Date.now();
   log(`POST /api/analyze/stream  item="${name || "(photo)"}" mode=${includeGuru ? "deep" : "fast"}`);
 
+  // Detect a real client disconnect. NOTE: req "close" fires once the request
+  // BODY is fully read (always, immediately), so we must watch the RESPONSE
+  // socket closing before it finished instead.
   let aborted = false;
-  req.on("close", () => { aborted = true; });
+  res.on("close", () => { if (!res.writableEnded) aborted = true; });
 
   // heartbeat so proxies/browsers don't drop the connection during long thinking gaps
   const hb = setInterval(() => { try { res.write(": ping\n\n"); } catch {} }, 10000);
@@ -727,6 +730,31 @@ app.post("/api/chat", async (req, res) => {
     res.json({ html: collectText(message).trim() });
   } catch (err) {
     res.status(err?.status || 500).json({ error: "chat_failed", detail: String(err?.message || err) });
+  }
+});
+
+// ---------- /api/reviews : run JUST the Gun Guru for one item (on-demand) ----------
+app.post("/api/reviews", async (req, res) => {
+  const client = clientFor(req);
+  if (!client) return res.status(401).json({ error: "missing_key" });
+
+  const { name, product } = req.body || {};
+  const itemName = name || (product && product.name);
+  if (!itemName) return res.status(400).json({ error: "need_name" });
+  const t0 = Date.now();
+  log(`POST /api/reviews item="${itemName}"`);
+
+  try {
+    const prompt = guruPrompt(`Item: ${itemName}`, { product: product || { name: itemName } });
+    const text = await timed("guru-ondemand", () =>
+      createPhase(client, { system: GURU_SOP, userContent: [{ type: "text", text: prompt }], useTools: true })
+    );
+    const guru = extractJson(text) || {};
+    log(`POST /api/reviews done in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    res.json({ quality: guru.quality || null, reviewSources: sanitizeReviewSources(guru.reviewSources) });
+  } catch (err) {
+    log(`POST /api/reviews ERROR in ${((Date.now() - t0) / 1000).toFixed(1)}s:`, String(err?.message || err));
+    res.status(err?.status || 500).json({ error: "reviews_failed", detail: String(err?.message || err) });
   }
 });
 

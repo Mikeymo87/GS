@@ -515,10 +515,11 @@ function renderResults(d, payload) {
     ${score != null ? `<div class="gauge" data-score="${score}"><div class="gauge-num"><b>${score}</b><small>SCORE</small></div></div>` : ""}
   </div>`;
 
-  // action bar (share)
+  // action bar
   html += `<div class="action-bar">
+    <button class="ghost-btn small" id="negotiateBtn">💬 Negotiate</button>
+    ${!quality ? `<button class="ghost-btn small" id="reviewsBtn">🧠 Check reviews</button>` : ""}
     <button class="ghost-btn small" id="shareBtn">📤 Share</button>
-    ${sources[0] && sources[0].url ? `<a class="ghost-btn small" href="${esc(sources[0].url)}" target="_blank" rel="noopener">↗ Cheapest online</a>` : ""}
   </div>`;
 
   // price summary
@@ -696,6 +697,47 @@ function renderResults(d, payload) {
   if (g) requestAnimationFrame(() => g.style.setProperty("--p", g.dataset.score));
   const sb = $("shareBtn");
   if (sb) sb.addEventListener("click", shareResult);
+  const nb = $("negotiateBtn");
+  if (nb) nb.addEventListener("click", openNegotiate);
+  const rb = $("reviewsBtn");
+  if (rb) rb.addEventListener("click", () => fetchReviews(rb));
+}
+
+// On-demand Gun Guru: fetch quality/reviews for the current item only.
+async function fetchReviews(btn) {
+  if (!lastResult || !lastResult.product) return;
+  btn.disabled = true;
+  btn.innerHTML = `🧠 Checking…`;
+  try {
+    const resp = await fetch("/api/reviews", {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({ name: lastResult.product.name, product: lastResult.product }),
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) {
+      if (data.error === "missing_key" || resp.status === 401) { openSettings(); }
+      else { toast("Couldn't load reviews"); }
+      btn.disabled = false; btn.innerHTML = "🧠 Check reviews";
+      return;
+    }
+    // merge into the result and re-render (quality card now shows, button drops off)
+    lastResult.quality = data.quality;
+    lastResult.reviewSources = data.reviewSources || [];
+    // keep the cache copy in sync so it persists without another call
+    cachePut(lastPayload, lastResult);
+    renderResults(lastResult, lastPayload);
+  } catch {
+    toast("Couldn't reach the server");
+    btn.disabled = false; btn.innerHTML = "🧠 Check reviews";
+  }
+}
+
+// Open chat focused on the item, pre-seeded for negotiation.
+function openNegotiate() {
+  openChat();
+  const ask = lastPayload && lastPayload.askingPrice ? ` They're asking ${money(lastPayload.askingPrice)}.` : "";
+  sendChat(`Help me negotiate this${ask} What should I open with, what's my walk-away, and exactly what do I say?`);
 }
 
 /* ---------------- share ---------------- */
