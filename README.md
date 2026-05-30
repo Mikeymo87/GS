@@ -32,6 +32,11 @@ Toggle the Gun Guru off for a faster/cheaper two-agent run.
 7. **Specialist's playbook** — cash-discount asks, OTD math, bundle ideas, inspection & fake-spotting tips.
 8. **Verifiable price sources** — ranked cheapest-first, each with a store favicon and a **direct product link to verify**.
 9. **Share** a result summary, **used vs. new** advice + red flags, and on-device **history**.
+10. **💬 Chat** — tap the bubble to ask the expert. On the home screen it has all your recent searches as
+    context; with a result open it focuses on that item (but can still search the web for anything).
+    Answers render as clean formatted HTML, not raw markdown.
+11. **Saves money** — the last **20 searches are cached** on your device; repeating an identical search
+    (or tapping a ⚡ history row) loads instantly with **no API charge**. Clear the item name with ✕.
 
 ### Works for anything that shoots or bolts onto something
 Complete firearms, AR-platform parts (uppers, lowers, **barrels**, BCGs, handguards, triggers),

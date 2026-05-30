@@ -56,8 +56,11 @@
 
       <div class="field">
         <label for="nameInput">Item name / model</label>
-        <input id="nameInput" type="text" inputmode="search" autocomplete="off"
-               placeholder="Gun, part, optic or ammo — e.g. BCM upper, 5.56 62gr, Trijicon RMR" />
+        <div class="name-wrap">
+          <input id="nameInput" type="text" inputmode="search" autocomplete="off"
+                 placeholder="Gun, part, optic or ammo — e.g. BCM upper, 5.56 62gr, Trijicon RMR" />
+          <button id="clearName" class="name-clear hidden" type="button" aria-label="Clear">✕</button>
+        </div>
       </div>
 
       <div class="grid-2">
@@ -175,6 +178,28 @@
     <div class="scan-frame"><span class="scan-line"></span></div>
     <div class="scan-hint">Point the camera at the barcode</div>
     <button id="scanClose" class="scan-close" aria-label="Close scanner">✕</button>
+  </div>
+
+  <!-- CHAT -->
+  <button id="chatFab" class="chat-fab" aria-label="Open chat">💬</button>
+
+  <div id="chatPanel" class="chat-panel hidden">
+    <div class="chat-head">
+      <div class="chat-title">
+        <span class="chat-avatar">💬</span>
+        <div>
+          <b>Ask the expert</b>
+          <small id="chatScope">All your searches</small>
+        </div>
+      </div>
+      <button id="chatClose" class="icon-btn" aria-label="Close chat">✕</button>
+    </div>
+    <div id="chatMessages" class="chat-messages"></div>
+    <div id="chatChips" class="chat-chips"></div>
+    <form id="chatForm" class="chat-input">
+      <input id="chatText" type="text" autocomplete="off" placeholder="Ask anything…" />
+      <button id="chatSend" type="submit" aria-label="Send">➤</button>
+    </form>
   </div>
 
   <div id="toast" class="toast hidden"></div>

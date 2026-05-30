@@ -6,6 +6,8 @@ const HIST_STORE = "gsdf_history";
 const DEEP_STORE = "gsdf_deep";
 const TAX_STORE = "gsdf_tax";
 const FFL_STORE = "gsdf_ffl";
+const CACHE_STORE = "gsdf_cache";   // last 20 full results, keyed by search
+const CACHE_MAX = 20;
 
 let selectedImage = null; // data URL
 let scannedUPC = null;
@@ -168,6 +170,33 @@ function closeScanner() {
   if (v) v.srcObject = null;
 }
 
+/* ---------------- result cache (saves money on repeat searches) ---------------- */
+function cacheKey(p) {
+  return [
+    (p.name || "").trim().toLowerCase(),
+    p.askingPrice || "",
+    (p.condition || "").toLowerCase(),
+    p.deep ? "deep" : "fast",
+  ].join("|");
+}
+function loadCache() { try { return JSON.parse(localStorage.getItem(CACHE_STORE) || "{}"); } catch { return {}; } }
+function cacheGet(p) {
+  if (!p.name || p.image) return null; // photo runs aren't cached (image not stored)
+  const c = loadCache();
+  const e = c[cacheKey(p)];
+  return e ? e.data : null;
+}
+function cachePut(p, data) {
+  if (!p.name || p.image) return;
+  const c = loadCache();
+  c[cacheKey(p)] = { data, at: Date.now() };
+  // keep only the most recent CACHE_MAX entries
+  const keys = Object.keys(c).sort((a, b) => c[b].at - c[a].at);
+  const trimmed = {};
+  keys.slice(0, CACHE_MAX).forEach((k) => (trimmed[k] = c[k]));
+  try { localStorage.setItem(CACHE_STORE, JSON.stringify(trimmed)); } catch {}
+}
+
 /* ---------------- API ---------------- */
 function apiHeaders() {
   const h = { "Content-Type": "application/json" };
@@ -324,6 +353,15 @@ async function analyze() {
   };
   lastPayload = payload;
 
+  // Instant cache hit — no API call, no cost.
+  const cached = cacheGet(payload);
+  if (cached) {
+    $("activity").classList.add("hidden");
+    finishRun(cached, { cached: true });
+    toast("Loaded from cache — no charge");
+    return;
+  }
+
   // hide the Guru lane if quality mode is off
   $("agent-guru").classList.toggle("hidden", !payload.deep);
 
@@ -417,12 +455,16 @@ function stopRun() {
   $("activity").classList.add("hidden");
 }
 
-function finishRun(data) {
+function finishRun(data, opts = {}) {
   lastResult = data;
   $("analyzeBtn").disabled = false;
   document.querySelector(".activity-title").textContent = "Done";
   renderResults(data, lastPayload);
-  saveHistory(data);
+  if (!opts.cached) {
+    cachePut(lastPayload, data);
+    saveHistory(data);
+  }
+  setChatScope();
   setTimeout(() => $("activity").classList.add("hidden"), 400);
 }
 
@@ -689,14 +731,19 @@ function toast(msg) {
 /* ---------------- history ---------------- */
 function loadHistory() { try { return JSON.parse(localStorage.getItem(HIST_STORE) || "[]"); } catch { return []; } }
 function saveHistory(d) {
-  const hist = loadHistory();
+  const hist = loadHistory().filter((h) => h.key !== cacheKey(lastPayload));
   hist.unshift({
-    name: (d.product && d.product.name) || "Item",
+    name: (d.product && d.product.name) || lastPayload.name || "Item",
     rating: (d.deal && d.deal.rating) || "unknown",
     fair: d.market && d.market.fairPrice,
+    key: cacheKey(lastPayload),
+    query: lastPayload.name || "",
+    askingPrice: lastPayload.askingPrice || null,
+    condition: lastPayload.condition || null,
+    deep: !!lastPayload.deep,
     at: Date.now(),
   });
-  localStorage.setItem(HIST_STORE, JSON.stringify(hist.slice(0, 15)));
+  localStorage.setItem(HIST_STORE, JSON.stringify(hist.slice(0, CACHE_MAX)));
   renderHistory();
 }
 function renderHistory() {
@@ -704,16 +751,35 @@ function renderHistory() {
   const sec = $("historySection");
   if (!hist.length) { sec.classList.add("hidden"); return; }
   sec.classList.remove("hidden");
+  const cache = loadCache();
   $("historyList").innerHTML = hist
-    .map((h) => {
+    .map((h, i) => {
       const r = (h.rating || "unknown").toLowerCase();
-      return `<li>
+      const cached = h.key && cache[h.key];
+      return `<li data-i="${i}" class="h-item">
         <span class="h-name">${esc(h.name)}</span>
+        ${cached ? `<span class="h-cached" title="Cached — reloads free">⚡</span>` : ""}
         <span style="color:var(--muted);font-size:13px">${h.fair ? money(h.fair) : ""}</span>
         <span class="h-pill ${r}">${esc(r)}</span>
       </li>`;
     })
     .join("");
+  $("historyList").querySelectorAll(".h-item").forEach((li) => {
+    li.addEventListener("click", () => reloadHistory(hist[Number(li.dataset.i)]));
+  });
+}
+
+// Tapping a history row repopulates the form and re-runs (cache → instant & free).
+function reloadHistory(h) {
+  if (!h) return;
+  clearImage();
+  $("nameInput").value = h.query || h.name || "";
+  $("priceInput").value = h.askingPrice || "";
+  $("conditionInput").value = h.condition || "";
+  $("deepToggle").checked = !!h.deep;
+  toggleClearName();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  analyze();
 }
 
 /* ---------------- settings ---------------- */
@@ -767,11 +833,17 @@ $("saveKey").addEventListener("click", () => {
 });
 $("clearHistory").addEventListener("click", () => { localStorage.removeItem(HIST_STORE); renderHistory(); });
 $("nameInput").addEventListener("keydown", (e) => { if (e.key === "Enter") analyze(); });
+$("nameInput").addEventListener("input", toggleClearName);
+$("clearName").addEventListener("click", () => { $("nameInput").value = ""; toggleClearName(); $("nameInput").focus(); });
 $("deepToggle").addEventListener("change", (e) => localStorage.setItem(DEEP_STORE, e.target.checked ? "1" : "0"));
+
+function toggleClearName() { $("clearName").classList.toggle("hidden", !$("nameInput").value); }
 
 // restore deep-mode preference
 if (localStorage.getItem(DEEP_STORE) === "0") $("deepToggle").checked = false;
+toggleClearName();
 renderHistory();
+initChat();
 
 (async () => {
   try {
@@ -779,6 +851,132 @@ renderHistory();
     if (!h.hasServerKey && !localStorage.getItem(KEY_STORE)) openSettings();
   } catch {}
 })();
+
+/* ---------------- chat ---------------- */
+let chatHistory = [];     // {role, content(plain for user / html for bot)}
+let chatBusy = false;
+
+const CHAT_TAGS = { P:1, B:1, I:1, EM:1, STRONG:1, UL:1, OL:1, LI:1, BR:1, A:1, CODE:1, H4:1 };
+
+// Sanitize model HTML to a safe allowlist (no scripts/styles/handlers).
+function sanitizeHtml(html) {
+  const tmp = document.createElement("div");
+  tmp.innerHTML = String(html || "");
+  (function walk(node) {
+    [...node.childNodes].forEach((n) => {
+      if (n.nodeType === 1) {
+        if (!CHAT_TAGS[n.tagName]) { n.replaceWith(...n.childNodes); walk(node); return; }
+        [...n.attributes].forEach((a) => {
+          const ok = n.tagName === "A" && a.name === "href" && /^https?:/i.test(a.value);
+          if (!ok) n.removeAttribute(a.name);
+        });
+        if (n.tagName === "A") { n.setAttribute("target", "_blank"); n.setAttribute("rel", "noopener"); }
+        walk(n);
+      } else if (n.nodeType !== 3) {
+        n.remove();
+      }
+    });
+  })(tmp);
+  return tmp.innerHTML;
+}
+
+function initChat() {
+  $("chatFab").addEventListener("click", openChat);
+  $("chatClose").addEventListener("click", () => $("chatPanel").classList.add("hidden"));
+  $("chatForm").addEventListener("submit", (e) => { e.preventDefault(); sendChat($("chatText").value); });
+}
+
+function setChatScope() {
+  const focused = !!(lastResult && lastResult.product);
+  const name = focused ? (lastResult.product.name || "this item") : null;
+  $("chatScope").textContent = focused ? `Focused on: ${name}` : "All your searches";
+}
+
+function chatChips() {
+  const focused = !!(lastResult && lastResult.product);
+  const chips = focused
+    ? ["Is this a good price?", "How low should I offer?", "Common problems?", "Better alternative?", "New vs used?"]
+    : ["What was my best deal?", "Cheapest 9mm right now?", "Is a Holosun 507C worth it?", "AR barrel buying tips"];
+  $("chatChips").innerHTML = chips.map((c) => `<button class="chip">${esc(c)}</button>`).join("");
+  $("chatChips").querySelectorAll(".chip").forEach((b) => b.addEventListener("click", () => sendChat(b.textContent)));
+}
+
+function openChat() {
+  setChatScope();
+  if (!chatHistory.length) {
+    const focused = !!(lastResult && lastResult.product);
+    $("chatMessages").innerHTML = `<div class="chat-empty">${
+      focused
+        ? "Ask me anything about <b>" + esc(lastResult.product.name || "this item") + "</b> — price, negotiation, quality, alternatives. I can also look things up."
+        : "Ask me anything — about your searches, current prices, gear advice, or gun-show tips. I can search the web too."
+    }</div>`;
+  }
+  chatChips();
+  $("chatPanel").classList.remove("hidden");
+  setTimeout(() => $("chatText").focus(), 100);
+}
+
+function addBubble(cls, html) {
+  const empty = $("chatMessages").querySelector(".chat-empty");
+  if (empty) empty.remove();
+  const div = document.createElement("div");
+  div.className = `bubble ${cls}`;
+  div.innerHTML = html;
+  $("chatMessages").appendChild(div);
+  $("chatMessages").scrollTop = $("chatMessages").scrollHeight;
+  return div;
+}
+
+async function sendChat(text) {
+  text = (text || "").trim();
+  if (!text || chatBusy) return;
+  if (!localStorage.getItem(KEY_STORE)) {
+    // still allow server key; only block if neither exists (health says so)
+  }
+  chatBusy = true;
+  $("chatText").value = "";
+  $("chatSend").disabled = true;
+  addBubble("user", esc(text));
+  chatHistory.push({ role: "user", content: text });
+  const typing = addBubble("bot typing", `<span class="dots"><span></span><span></span><span></span></span>`);
+
+  const recentSearches = loadHistory().map((h) => h.name).filter(Boolean);
+  const item = lastResult && lastResult.product ? lastResult : null;
+
+  try {
+    const resp = await fetch("/api/chat", {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({
+        message: text,
+        history: chatHistory.slice(0, -1).map((m) => ({ role: m.role, content: m.role === "assistant" ? m._plain || m.content : m.content })),
+        item,
+        recentSearches,
+      }),
+    });
+    const data = await resp.json();
+    typing.remove();
+    if (!resp.ok || data.error) {
+      if (data.error === "missing_key" || resp.status === 401) {
+        addBubble("bot", "Add your Anthropic API key in <b>⚙️ Settings</b> to use chat.");
+        openSettings();
+      } else {
+        addBubble("bot", "Sorry — " + esc(data.detail || data.error || "something went wrong") + ".");
+      }
+    } else {
+      const safe = sanitizeHtml(data.html);
+      const b = addBubble("bot", safe || "(no answer)");
+      chatHistory.push({ role: "assistant", content: safe, _plain: b.textContent });
+    }
+  } catch (e) {
+    typing.remove();
+    addBubble("bot", "Couldn't reach the server. Check your connection and try again.");
+  } finally {
+    chatBusy = false;
+    $("chatSend").disabled = false;
+    $("chatText").focus();
+  }
+}
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));

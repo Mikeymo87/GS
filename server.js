@@ -543,6 +543,85 @@ app.post("/api/analyze/stream", async (req, res) => {
   res.end();
 });
 
+// ---------- /api/chat : conversational assistant (item-focused or global) ----------
+const CHAT_SOP = [
+  "# ROLE",
+  "You are the in-app gun-show assistant — a sharp, friendly expert on firearms, parts, optics, ammo, prices,",
+  "and gun-show negotiation. You help a shopper who is on the floor right now. Be concise and practical.",
+  "",
+  "# CONTEXT MODES",
+  "- If an ITEM is in focus (provided below), answer about THAT item first, but you may go beyond it and",
+  "  search the web or answer anything the user asks.",
+  "- If no item is in focus, you have the user's recent searches as background; use them when relevant.",
+  "- Use the web_search tool when the user asks about current prices, availability, reviews, or facts you should verify.",
+  "",
+  "# OUTPUT FORMAT — IMPORTANT",
+  "Reply with clean, simple HTML (NOT markdown). Allowed tags ONLY: <p> <b> <i> <ul> <ol> <li> <br>",
+  "<strong> <em> <a href> <code> <h4>. No markdown symbols (#, *, **, backticks). Keep paragraphs short.",
+  "Use <ul>/<li> for lists. Use <b> for key numbers/verdicts. If you cite a source, link it with <a href>.",
+  "Do not include <html>, <body>, <script>, or style attributes. Just the answer HTML.",
+].join("\n");
+
+app.post("/api/chat", async (req, res) => {
+  const client = clientFor(req);
+  if (!client) return res.status(401).json({ error: "missing_key" });
+
+  const { message, history, item, recentSearches } = req.body || {};
+  if (!message || !String(message).trim()) return res.status(400).json({ error: "empty" });
+
+  const ctxParts = [];
+  if (item) {
+    ctxParts.push(
+      "ITEM IN FOCUS:\n```json\n" +
+        JSON.stringify(
+          {
+            product: item.product,
+            market: item.market,
+            deal: item.deal,
+            otd: item.otd,
+            quality: item.quality,
+            counterOffer: item.counterOffer,
+          },
+          null,
+          2
+        ) +
+        "\n```"
+    );
+  } else if (Array.isArray(recentSearches) && recentSearches.length) {
+    ctxParts.push("USER'S RECENT SEARCHES (background context):\n" + recentSearches.slice(0, 20).map((s, i) => `${i + 1}. ${s}`).join("\n"));
+  }
+
+  // Build a short rolling conversation
+  const msgs = [];
+  if (Array.isArray(history)) {
+    for (const h of history.slice(-8)) {
+      if (h && (h.role === "user" || h.role === "assistant") && h.content) {
+        msgs.push({ role: h.role, content: String(h.content).slice(0, 4000) });
+      }
+    }
+  }
+  const userText = (ctxParts.length ? ctxParts.join("\n\n") + "\n\n" : "") + "USER: " + String(message).trim();
+  msgs.push({ role: "user", content: userText });
+
+  const params = {
+    model: MODEL,
+    max_tokens: 1500,
+    system: CHAT_SOP,
+    messages: msgs,
+  };
+  try {
+    let message;
+    try {
+      message = await client.messages.create({ ...params, tools: [{ type: WEB_SEARCH_TOOL, name: "web_search", max_uses: 4 }] });
+    } catch (e) {
+      message = await client.messages.create(params); // fallback: no tools
+    }
+    res.json({ html: collectText(message).trim() });
+  } catch (err) {
+    res.status(err?.status || 500).json({ error: "chat_failed", detail: String(err?.message || err) });
+  }
+});
+
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, model: MODEL, hasServerKey: !!process.env.ANTHROPIC_API_KEY });
 });
