@@ -1,0 +1,14 @@
+{
+  "name": "Gun Show Deal Finder",
+  "short_name": "Deal Finder",
+  "description": "Scan or type an item at a gun show, compare prices across reputable stores, and get AI deal + counter-offer advice.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f1216",
+  "theme_color": "#0f1216",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

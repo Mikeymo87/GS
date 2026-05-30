@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="theme-color" content="#0f1216" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Deal Finder" />
+  <title>Gun Show Deal Finder</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icon.svg" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">🎯</span>
+      <div>
+        <h1>Deal Finder</h1>
+        <p class="tag">Scan it. Price it. Counter it.</p>
+      </div>
+    </div>
+    <button id="settingsBtn" class="icon-btn" aria-label="Settings">⚙️</button>
+  </header>
+
+  <main id="app">
+    <!-- SEARCH CARD -->
+    <section class="card search-card">
+      <div class="capture-row">
+        <label class="capture-btn" for="cameraInput">
+          <span class="capture-emoji">📷</span>
+          <span>Photo</span>
+          <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden />
+        </label>
+        <label class="capture-btn" for="galleryInput">
+          <span class="capture-emoji">🖼️</span>
+          <span>Upload</span>
+          <input id="galleryInput" type="file" accept="image/*" hidden />
+        </label>
+      </div>
+
+      <div id="thumbWrap" class="thumb-wrap hidden">
+        <img id="thumb" alt="Selected item" />
+        <button id="clearThumb" class="thumb-clear" aria-label="Remove photo">✕</button>
+        <div id="idStatus" class="id-status"></div>
+      </div>
+
+      <div class="field">
+        <label for="nameInput">Item name / model</label>
+        <input id="nameInput" type="text" inputmode="search" autocomplete="off"
+               placeholder="e.g. Glock 19 Gen 5 9mm" />
+      </div>
+
+      <div class="grid-2">
+        <div class="field">
+          <label for="priceInput">Their asking price</label>
+          <div class="price-input">
+            <span>$</span>
+            <input id="priceInput" type="number" inputmode="decimal" min="0" step="1" placeholder="0" />
+          </div>
+        </div>
+        <div class="field">
+          <label for="conditionInput">Condition</label>
+          <select id="conditionInput">
+            <option value="">—</option>
+            <option value="new in box">New in box</option>
+            <option value="like new">Like new</option>
+            <option value="used - good">Used – good</option>
+            <option value="used - fair">Used – fair</option>
+            <option value="vintage / collectible">Vintage / collectible</option>
+          </select>
+        </div>
+      </div>
+
+      <button id="analyzeBtn" class="primary-btn">
+        <span class="btn-label">Find best deal</span>
+      </button>
+      <p id="formError" class="form-error hidden"></p>
+    </section>
+
+    <!-- LOADING -->
+    <section id="loading" class="card loading hidden">
+      <div class="spinner"></div>
+      <p id="loadingMsg">Searching reputable stores…</p>
+      <ul id="loadingSteps" class="steps">
+        <li data-step="0">Identifying the item</li>
+        <li data-step="1">Pricing across new & used sources</li>
+        <li data-step="2">Averaging a fair price</li>
+        <li data-step="3">Scoring the deal & counter-offer</li>
+      </ul>
+    </section>
+
+    <!-- RESULTS -->
+    <section id="results" class="results hidden"></section>
+
+    <!-- HISTORY -->
+    <section id="historySection" class="card history hidden">
+      <div class="history-head">
+        <h2>Recent scans</h2>
+        <button id="clearHistory" class="link-btn">Clear</button>
+      </div>
+      <ul id="historyList" class="history-list"></ul>
+    </section>
+  </main>
+
+  <!-- SETTINGS MODAL -->
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Settings</h2>
+      <div class="field">
+        <label for="keyInput">Anthropic API key</label>
+        <input id="keyInput" type="password" placeholder="sk-ant-…" autocomplete="off" />
+        <p class="hint">Stored only on this device. Leave blank to use the server's key.</p>
+      </div>
+      <div id="keyStatus" class="key-status"></div>
+      <div class="modal-actions">
+        <button id="saveKey" class="primary-btn small">Save</button>
+        <button id="closeSettings" class="ghost-btn small">Close</button>
+      </div>
+      <p class="about">Powered by Claude Sonnet 4.6 with live web search. For research only — verify prices and follow all laws before buying.</p>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

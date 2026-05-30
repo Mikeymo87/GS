@@ -1,0 +1,18 @@
+{
+  "name": "gunshow-deal-finder",
+  "version": "1.0.0",
+  "description": "Mobile PWA to scan or type a firearm/item at a gun show, compare prices across reputable stores, and get Claude Sonnet 4.6 deal + counter-offer advice.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "node --env-file-if-exists=.env --watch server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.1",
+    "express": "^4.21.2"
+  }
+}
