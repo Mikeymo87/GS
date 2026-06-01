@@ -2,7 +2,7 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Anthropic from "@anthropic-ai/sdk";
-import { openGate, billingEnabled, billingConfig, verifyToken, bearer, getBalance, verifyWebhookSecret, handleWebhookEvent } from "./lib/billing.js";
+import { openGate, billingEnabled, billingConfig, publicConfig, verifyToken, bearer, getBalance, verifyWebhookSecret, handleWebhookEvent } from "./lib/billing.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -498,6 +498,9 @@ app.post("/api/identify", async (req, res) => {
   const imgs = imageBlocksFrom(req.body);
   const upc = (req.body?.upc || "").toString().trim();
   if (!imgs.length && !upc) return res.status(400).json({ error: "no_image" });
+  // Free action, but in billing mode it still requires a signed-in user (no anonymous use of our key).
+  const gate = await openGate(req, "free");
+  if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
   try {
     const content = [...imgs];
     content.push({
@@ -776,6 +779,8 @@ app.post("/api/chat", async (req, res) => {
 
   const { message, history, item, recentSearches } = req.body || {};
   if (!message || !String(message).trim()) return res.status(400).json({ error: "empty" });
+  const gate = await openGate(req, "free"); // free, but billing mode requires a signed-in user
+  if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
 
   const ctxParts = [];
   if (item) {
@@ -871,6 +876,8 @@ app.post("/api/refine", async (req, res) => {
   if (!itemName || !Array.isArray(history) || !history.length) {
     return res.status(400).json({ error: "need_context" });
   }
+  const gate = await openGate(req, "free"); // free, but billing mode requires a signed-in user
+  if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
   const t0 = Date.now();
   log(`POST /api/refine item="${itemName}"`);
 
@@ -910,6 +917,9 @@ app.post("/api/refine", async (req, res) => {
     res.status(err?.status || 500).json({ error: "refine_failed", detail: String(err?.message || err) });
   }
 });
+
+// ---------- /api/config : client-safe runtime config (billing on? sign-in details? prices?) ----------
+app.get("/api/config", (req, res) => res.json(publicConfig()));
 
 // ---------- /api/credits : the signed-in user's balance + pricing (billing mode only) ----------
 app.get("/api/credits", async (req, res) => {

@@ -114,6 +114,23 @@ RevenueCat. The ledger and 402 flow are shared across both.
 **AI-API safety:** in billing mode `clientFor` ignores any client-supplied `x-anthropic-key` and uses
 only the server key, so the credit ledger is the sole gate — a request can't run on a foreign key
 while we debit credits, and BYO-key can't bypass metering. (BYO-key still works when billing is off.)
+The "free" endpoints (`/api/identify`, `/api/chat`, `/api/refine`) also require a signed-in user in
+billing mode (gated via `openGate(req,"free")`, 0 credits) so the server key can't be used anonymously.
+
+**Done (step 5, client — auth + credits UI):**
+- `GET /api/config` — client-safe runtime config: `{ billing, supabaseUrl, supabaseAnonKey, costs,
+  freeCredits, packs }`. The app calls it on load to pick BYO-key vs billing mode.
+- `public/auth.js` — dependency-free Supabase email/password auth over the auth REST API: session
+  persistence in `localStorage`, proactive token refresh, `Auth.accessToken()` / `signIn` / `signUp` /
+  `signOut` / `refreshBalance` / `onChange`. Inert when billing is off.
+- `public/app.js` — sends `Authorization: Bearer` in billing mode (instead of `x-anthropic-key`);
+  credits chip in the header; sign-in / account / top-up sheets; `402 insufficient_credits` → top-up
+  sheet, `401` → sign-in; balance updates from each response's `credits.balance`; requires sign-in
+  before a run. `index.html` / `styles.css` add the modals + chip; `sw.js` cache bumped to v9.
+- The top-up sheet renders `packs` but the **Buy button is a placeholder** — it needs the payment
+  provider (Stripe on web / RevenueCat IAP in the app), which is the next step.
+
+Extra env: `SUPABASE_ANON_KEY` (public; sent to the client), `RC_TOPUP_PACKS` (JSON, display only).
 
 **Off by default.** Billing activates only when `BILLING_ENABLED` is truthy AND `SUPABASE_URL` +
 `SUPABASE_SERVICE_KEY` + `SUPABASE_JWT_SECRET` are set. Otherwise every gate is a no-op and the
@@ -128,5 +145,6 @@ Env (server-only): `BILLING_ENABLED`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `S
 `Authorization: Bearer <jwt>`; on `402 insufficient_credits` (or SSE `{t:"error", error:"insufficient_credits"}`)
 it shows the top-up sheet using the returned `balance` + `cost`.
 
-**Not yet (later steps):** the client side — Supabase auth UI, sending the `Authorization` bearer,
-`Purchases.logIn(supabaseUserId)`, and the `402` → top-up sheet; then Capacitor wrap + App Review.
+**Not yet (later steps):** wiring the top-up/subscription **purchase** flow to a payment provider
+(Stripe Checkout on web; RevenueCat IAP + `Purchases.logIn(supabaseUserId)` in the app — `buyPack()`
+in `app.js` is the placeholder hook), then the Capacitor wrap + App Review.

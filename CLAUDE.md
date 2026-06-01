@@ -73,6 +73,13 @@ timing-safe), body `{api_version,event}`, idempotent on `event.id`. `NON_RENEWIN
 `INITIAL_PURCHASE`/`RENEWAL`/`PRODUCT_CHANGE`/`UNCANCELLATION`/`SUBSCRIPTION_EXTENDED`→`reset_monthly`;
 `EXPIRATION`→free. `app_user_id` must be the Supabase UUID (client `Purchases.logIn(uuid)`); map
 products via `RC_PRODUCT_MAP` (JSON). Unknown user→200 ack; ledger down→500 (RC retries).
+Free endpoints (`/api/identify`,`/api/chat`,`/api/refine`) also require a signed-in user in billing
+mode (`openGate(req,"free")`, 0 credits) so the server key can't be used anonymously.
+Client: `GET /api/config` returns `{billing,supabaseUrl,supabaseAnonKey,costs,freeCredits,packs}`.
+`public/auth.js` (loaded before app.js) does Supabase email/pw auth via REST + token refresh, exposes
+`window.Auth`; inert when billing off. `app.js` sends `Authorization: Bearer` in billing mode, shows
+credits chip + sign-in/account/top-up modals, maps 402→top-up & 401→sign-in. Purchase button is a
+placeholder (`buyPack()`) pending Stripe/RevenueCat. Extra env: `SUPABASE_ANON_KEY`, `RC_TOPUP_PACKS`.
 
 Smoke test:
 ```bash

@@ -16,6 +16,7 @@ let identifying = false;
 let runController = null;
 let lastPayload = {};
 let lastResult = null;
+let streamTerminalError = false; // set when the stream delivers an error we shouldn't retry via fallback
 let pendingDetails = null;   // extra details pulled from chat, applied to the next analyze()
 let refining = false;
 let lastNudgeAt = 0;
@@ -225,9 +226,31 @@ function cachePut(p, data) {
 /* ---------------- API ---------------- */
 function apiHeaders() {
   const h = { "Content-Type": "application/json" };
-  const key = localStorage.getItem(KEY_STORE);
-  if (key) h["x-anthropic-key"] = key;
+  // Billing mode: send the signed-in user's token (the server uses its own AI key + meters credits).
+  if (window.Auth && Auth.enabled) {
+    const t = Auth.accessToken();
+    if (t) h["Authorization"] = "Bearer " + t;
+  } else {
+    // BYO-key mode (billing off): send the device's saved Anthropic key.
+    const key = localStorage.getItem(KEY_STORE);
+    if (key) h["x-anthropic-key"] = key;
+  }
   return h;
+}
+
+// Central handler for billing responses. Returns true if the caller should STOP (it showed a sheet).
+function handleBillingError(errCode, status) {
+  if (!(window.Auth && Auth.enabled)) return false;
+  if (errCode === "insufficient_credits" || status === 402) { openTopup(); return true; }
+  if (errCode === "unauthorized" || status === 401) { openAuth("signin", "Sign in to keep searching."); return true; }
+  return false;
+}
+
+// Pull the latest balance out of any API result that carries it.
+function noteCredits(data) {
+  if (window.Auth && Auth.enabled && data && data.credits && typeof data.credits.balance === "number") {
+    Auth.setBalance(data.credits.balance);
+  }
 }
 
 async function identify() {
@@ -242,8 +265,8 @@ async function identify() {
       body: JSON.stringify({ images: selectedImages, image: selectedImages[0] || null, upc: scannedUPC }),
     });
     if (r.status === 401) {
-      $("idStatus").textContent = "⚠️ Add your API key in ⚙️";
-      openSettings();
+      if (window.Auth && Auth.enabled) { $("idStatus").textContent = "🔑 Sign in to identify photos"; openAuth("signin", "Sign in to use photo identify."); }
+      else { $("idStatus").textContent = "⚠️ Add your API key in ⚙️"; openSettings(); }
       return;
     }
     const data = await r.json();
@@ -361,12 +384,16 @@ function handleEvent(ev) {
       break;
     case "done":
       finalizeThink();
+      noteCredits(ev.data);
       finishRun(ev.data);
       break;
     case "error":
       finalizeThink();
       stopRun();
-      if (ev.error === "missing_key") {
+      streamTerminalError = true;
+      if (handleBillingError(ev.error)) {
+        // top-up / sign-in sheet shown
+      } else if (ev.error === "missing_key") {
         openSettings();
         showFormError("Add your Anthropic API key in ⚙️ Settings to search.");
       } else {
@@ -383,6 +410,8 @@ async function analyze() {
     showFormError("Take a photo, scan a barcode, or type an item name first.");
     return;
   }
+  // Billing mode: must be signed in before we run (saves a wasted round-trip).
+  if (window.Auth && Auth.enabled && !Auth.accessToken()) { openAuth("signin", "Sign in to run a deal check."); return; }
   hideFormError();
 
   const payload = {
@@ -424,6 +453,7 @@ async function analyze() {
 
   let gotResult = false;
   let streamWorked = false;
+  streamTerminalError = false;
   runController = new AbortController();
   try {
     const resp = await fetch("/api/analyze/stream", {
@@ -454,10 +484,12 @@ async function analyze() {
         }
       }
     }
-    // Stream ended without delivering a result → fall back to a plain request.
-    if (!gotResult) await analyzeFallback(payload);
+    // Stream ended without delivering a result → fall back to a plain request,
+    // unless it ended on a terminal error (e.g. out of credits / not signed in).
+    if (!gotResult && !streamTerminalError) await analyzeFallback(payload);
   } catch (e) {
     if (e.name === "AbortError") return;
+    if (streamTerminalError) return;
     // Streaming failed entirely (network/proxy/Safari) → reliable non-streaming path.
     await analyzeFallback(payload, !streamWorked);
   } finally {
@@ -481,7 +513,9 @@ async function analyzeFallback(payload, quiet) {
     const data = await resp.json();
     if (!resp.ok || data.error) {
       stopRun();
-      if (data.error === "missing_key" || resp.status === 401) {
+      if (handleBillingError(data.error, resp.status)) {
+        // top-up / sign-in sheet shown
+      } else if (data.error === "missing_key" || resp.status === 401) {
         openSettings();
         showFormError("Add your Anthropic API key in ⚙️ Settings to search.");
       } else {
@@ -489,6 +523,7 @@ async function analyzeFallback(payload, quiet) {
       }
       return;
     }
+    noteCredits(data);
     (payload.deep ? ["scout", "guru", "specialist"] : ["scout"]).forEach((p) => setAgent(p, "done"));
     finishRun(data);
   } catch (e) {
@@ -762,11 +797,13 @@ async function fetchReviews(btn) {
     });
     const data = await resp.json();
     if (!resp.ok || data.error) {
-      if (data.error === "missing_key" || resp.status === 401) { openSettings(); }
+      if (handleBillingError(data.error, resp.status)) { /* sheet shown */ }
+      else if (data.error === "missing_key" || resp.status === 401) { openSettings(); }
       else { toast("Couldn't load reviews"); }
       btn.disabled = false; btn.innerHTML = "🧠 Check reviews";
       return;
     }
+    noteCredits(data);
     // merge into the result and re-render (quality card now shows, button drops off)
     lastResult.quality = data.quality;
     lastResult.reviewSources = data.reviewSources || [];
@@ -1019,6 +1056,115 @@ async function updateKeyStatus() {
 function showFormError(msg) { const e = $("formError"); e.textContent = msg; e.classList.remove("hidden"); }
 function hideFormError() { $("formError").classList.add("hidden"); }
 
+/* ---------------- billing UI (only active when /api/config says billing is on) ---------------- */
+let authMode = "signin"; // 'signin' | 'signup'
+
+function reflectAuth(state) {
+  if (!(window.Auth && Auth.enabled)) return;
+  const signedIn = !!(state && state.user);
+  $("accountBtn").classList.remove("hidden");
+  $("creditsChip").classList.toggle("hidden", !signedIn);
+  if (signedIn && Auth.balance != null) $("creditsCount").textContent = Auth.balance;
+  $("accountBtn").textContent = signedIn ? "👤" : "🔑";
+}
+
+function openAuth(mode, subtitle) {
+  authMode = mode === "signup" ? "signup" : "signin";
+  $("authTitle").textContent = authMode === "signup" ? "Create account" : "Sign in";
+  $("authSubmit").querySelector(".btn-label").textContent = authMode === "signup" ? "Create account" : "Sign in";
+  $("authSwitchPrompt").textContent = authMode === "signup" ? "Already have an account?" : "New here?";
+  $("authSwitch").textContent = authMode === "signup" ? "Sign in" : "Create an account";
+  $("authSubtitle").textContent = subtitle || (authMode === "signup"
+    ? "Create an account to get started." : "Sign in to use your credits.");
+  $("authFreeCredits").textContent = (Auth.config && Auth.config.freeCredits) || 3;
+  $("authError").classList.add("hidden");
+  $("authNotice").classList.add("hidden");
+  $("authModal").classList.remove("hidden");
+  setTimeout(() => $("authEmail").focus(), 50);
+}
+function closeAuth() { $("authModal").classList.add("hidden"); }
+
+async function submitAuth() {
+  const email = $("authEmail").value.trim();
+  const password = $("authPassword").value;
+  const err = $("authError"), notice = $("authNotice");
+  err.classList.add("hidden"); notice.classList.add("hidden");
+  if (!email || !password) { err.textContent = "Enter your email and password."; err.classList.remove("hidden"); return; }
+  const btn = $("authSubmit"); btn.disabled = true;
+  try {
+    const res = authMode === "signup" ? await Auth.signUp(email, password) : await Auth.signIn(email, password);
+    if (!res.ok) { err.textContent = res.error || "Something went wrong."; err.classList.remove("hidden"); return; }
+    if (authMode === "signup" && res.confirmed === false) {
+      notice.textContent = "Check your email to confirm your account, then sign in.";
+      notice.classList.remove("hidden");
+      authMode = "signin";
+      return;
+    }
+    closeAuth();
+    toast("Signed in");
+  } finally { btn.disabled = false; }
+}
+
+function openAccount() {
+  if (!(window.Auth && Auth.enabled && Auth.user)) { openAuth("signin"); return; }
+  $("accountEmail").textContent = Auth.user.email || "—";
+  $("accountBalance").textContent = Auth.balance != null ? Auth.balance : "—";
+  $("accountModal").classList.remove("hidden");
+  Auth.refreshBalance();
+}
+function closeAccount() { $("accountModal").classList.add("hidden"); }
+
+function renderTopupPacks() {
+  const wrap = $("topupPacks");
+  const packs = (Auth.config && Auth.config.packs) || [];
+  wrap.innerHTML = "";
+  packs.forEach((p) => {
+    const b = document.createElement("button");
+    b.className = "topup-pack";
+    b.innerHTML = `<b>${esc(String(p.credits))} credits</b><span>${esc(p.price || "")}</span>`;
+    b.addEventListener("click", () => buyPack(p));
+    wrap.appendChild(b);
+  });
+}
+
+function openTopup() {
+  if (!(window.Auth && Auth.enabled)) return;
+  if (!Auth.user) { openAuth("signin", "Sign in to buy credits."); return; }
+  renderTopupPacks();
+  $("topupSubtitle").textContent = (Auth.balance != null && Auth.balance <= 0)
+    ? "You're out of credits. Pick a pack to keep searching."
+    : "Pick a pack to top up.";
+  // Purchases aren't wired to a payment provider yet (RevenueCat in-app / Stripe on web).
+  $("topupNote").textContent = "In-app purchases are being set up — these will be live shortly.";
+  $("topupModal").classList.remove("hidden");
+}
+function closeTopup() { $("topupModal").classList.add("hidden"); }
+
+function buyPack(_p) {
+  // Placeholder until the payment provider is wired (next step). Then this calls
+  // Purchases.purchaseProduct(p.id) (mobile) or opens Stripe Checkout (web).
+  toast("Purchases coming soon");
+}
+
+function initBilling() {
+  if (!(window.Auth && Auth.enabled)) return;
+  Auth.onChange(reflectAuth);
+  reflectAuth({ user: Auth.user, balance: Auth.balance });
+  $("accountBtn").addEventListener("click", () => (Auth.user ? openAccount() : openAuth("signin")));
+  $("creditsChip").addEventListener("click", openTopup);
+  $("authSubmit").addEventListener("click", submitAuth);
+  $("authClose").addEventListener("click", closeAuth);
+  $("authPassword").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAuth(); });
+  $("authSwitch").addEventListener("click", (e) => { e.preventDefault(); openAuth(authMode === "signup" ? "signin" : "signup"); });
+  $("authModal").addEventListener("click", (e) => { if (e.target === $("authModal")) closeAuth(); });
+  $("accountSignOut").addEventListener("click", async () => { await Auth.signOut(); closeAccount(); toast("Signed out"); });
+  $("accountClose").addEventListener("click", closeAccount);
+  $("accountTopup").addEventListener("click", () => { closeAccount(); openTopup(); });
+  $("accountModal").addEventListener("click", (e) => { if (e.target === $("accountModal")) closeAccount(); });
+  $("topupClose").addEventListener("click", closeTopup);
+  $("topupModal").addEventListener("click", (e) => { if (e.target === $("topupModal")) closeTopup(); });
+}
+
 /* ---------------- wire up ---------------- */
 $("cameraInput").addEventListener("change", (e) => onImageChosen(e.target.files[0]));
 $("barcodeInput").addEventListener("change", (e) => onImageChosen(e.target.files[0], { barcode: true }));
@@ -1056,6 +1202,14 @@ renderHistory();
 initChat();
 
 (async () => {
+  // Wait for billing config so we know which mode we're in.
+  try { await (window.Auth && Auth.ready); } catch {}
+  if (window.Auth && Auth.enabled) {
+    initBilling();
+    if (!Auth.user) openAuth("signin", "Sign in to start (new accounts get free credits).");
+    return; // billing mode uses the server's AI key — no device-key prompt
+  }
+  // BYO-key mode: prompt for an Anthropic key if neither server nor device has one.
   try {
     const h = await (await fetch("/api/health")).json();
     if (!h.hasServerKey && !localStorage.getItem(KEY_STORE)) openSettings();
@@ -1168,7 +1322,10 @@ async function sendChat(text) {
     const data = await resp.json();
     typing.remove();
     if (!resp.ok || data.error) {
-      if (data.error === "missing_key" || resp.status === 401) {
+      if (window.Auth && Auth.enabled && (data.error === "unauthorized" || resp.status === 401)) {
+        addBubble("bot", "Sign in to use chat.");
+        openAuth("signin", "Sign in to use chat.");
+      } else if (data.error === "missing_key" || resp.status === 401) {
         addBubble("bot", "Add your Anthropic API key in <b>⚙️ Settings</b> to use chat.");
         openSettings();
       } else {

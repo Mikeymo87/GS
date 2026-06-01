@@ -62,6 +62,29 @@ body {
   width: 44px; height: 44px; border-radius: 13px; font-size: 18px; backdrop-filter: blur(6px);
 }
 .icon-btn:active { transform: scale(.94); }
+.topbar-actions { display: flex; align-items: center; gap: 8px; }
+.credits-chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 44px; padding: 0 14px;
+  border-radius: 13px; font-weight: 800; font-size: 15px; color: var(--accent-2);
+  background: var(--card-2); border: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+.credits-chip:active { transform: scale(.96); }
+.credits-icon { font-size: 15px; }
+.account-balance {
+  display: flex; align-items: center; gap: 10px; margin: 12px 0;
+  background: var(--card-2); border: 1px solid var(--line); border-radius: 14px; padding: 14px;
+}
+.account-balance b { font-size: 20px; color: var(--accent-2); }
+.account-balance > div { flex: 1; }
+.topup-packs { display: grid; gap: 10px; margin-top: 12px; }
+.topup-pack {
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--card-2); border: 1px solid var(--line); border-radius: 14px;
+  padding: 16px 18px; color: var(--txt); text-align: left;
+}
+.topup-pack:active { transform: scale(.99); border-color: var(--accent); }
+.topup-pack b { font-size: 16px; }
+.topup-pack span { font-size: 16px; font-weight: 800; color: var(--accent-2); }
 
 main { max-width: 680px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
 

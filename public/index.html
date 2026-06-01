@@ -24,7 +24,13 @@
         <p class="tag">AI scout · gun guru · deal specialist</p>
       </div>
     </div>
-    <button id="settingsBtn" class="icon-btn" aria-label="Settings">⚙️</button>
+    <div class="topbar-actions">
+      <button id="creditsChip" class="credits-chip hidden" aria-label="Credits">
+        <span class="credits-icon">🪙</span><span id="creditsCount">—</span>
+      </button>
+      <button id="accountBtn" class="icon-btn hidden" aria-label="Account">👤</button>
+      <button id="settingsBtn" class="icon-btn" aria-label="Settings">⚙️</button>
+    </div>
   </header>
 
   <main id="app">
@@ -173,6 +179,63 @@
     </div>
   </div>
 
+  <!-- AUTH MODAL (billing mode only) -->
+  <div id="authModal" class="modal hidden">
+    <div class="modal-card">
+      <h2 id="authTitle">Sign in</h2>
+      <p class="hint" id="authSubtitle">Sign in to use your credits across devices.</p>
+      <div class="field">
+        <label for="authEmail">Email</label>
+        <input id="authEmail" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com" />
+      </div>
+      <div class="field">
+        <label for="authPassword">Password</label>
+        <input id="authPassword" type="password" autocomplete="current-password" placeholder="••••••••" />
+      </div>
+      <div id="authError" class="key-status warn hidden"></div>
+      <div id="authNotice" class="key-status ok hidden"></div>
+      <div class="modal-actions">
+        <button id="authSubmit" class="primary-btn small"><span class="btn-label">Sign in</span></button>
+        <button id="authClose" class="ghost-btn small">Close</button>
+      </div>
+      <p class="about">
+        <span id="authSwitchPrompt">New here?</span>
+        <a href="#" id="authSwitch">Create an account</a> · new accounts get
+        <b id="authFreeCredits">3</b> free credits.
+      </p>
+    </div>
+  </div>
+
+  <!-- ACCOUNT SHEET (signed-in) -->
+  <div id="accountModal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Account</h2>
+      <p class="hint">Signed in as <b id="accountEmail">—</b></p>
+      <div class="account-balance">
+        <span class="credits-icon">🪙</span>
+        <div><b id="accountBalance">—</b> credits</div>
+        <button id="accountTopup" class="primary-btn small"><span class="btn-label">Get more</span></button>
+      </div>
+      <div class="modal-actions">
+        <button id="accountSignOut" class="ghost-btn small">Sign out</button>
+        <button id="accountClose" class="ghost-btn small">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOP-UP SHEET (out of credits) -->
+  <div id="topupModal" class="modal hidden">
+    <div class="modal-card">
+      <h2 id="topupTitle">Get more credits</h2>
+      <p class="hint" id="topupSubtitle">Pick a pack to keep searching.</p>
+      <div id="topupPacks" class="topup-packs"></div>
+      <p class="hint" id="topupNote" style="margin-top:10px"></p>
+      <div class="modal-actions">
+        <button id="topupClose" class="ghost-btn small">Maybe later</button>
+      </div>
+    </div>
+  </div>
+
   <!-- LIVE BARCODE SCANNER -->
   <div id="scanner" class="scanner hidden">
     <video id="scanVideo" playsinline muted autoplay></video>
@@ -206,6 +269,7 @@
 
   <div id="toast" class="toast hidden"></div>
 
+  <script src="/auth.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
