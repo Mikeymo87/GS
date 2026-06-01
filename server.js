@@ -2,6 +2,7 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Anthropic from "@anthropic-ai/sdk";
+import { openGate, billingEnabled, billingConfig, verifyToken, bearer, getBalance } from "./lib/billing.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -568,6 +569,10 @@ app.post("/api/analyze", async (req, res) => {
   const t0 = Date.now();
   log(`POST /api/analyze  item="${name || "(photo)"}" mode=${includeGuru ? "deep" : "fast"}`);
 
+  // Metering gate (no-op unless billing is enabled). Debits up front; refunds on failure.
+  const gate = await openGate(req, includeGuru ? "deep" : "fast");
+  if (!gate.ok) return res.status(gate.status).json({ error: gate.error, balance: gate.balance, cost: gate.cost });
+
   try {
     // ---- FAST: single agent does everything ----
     if (!includeGuru) {
@@ -575,6 +580,7 @@ app.post("/api/analyze", async (req, res) => {
         createPhase(client, { system: FAST_SOP, userContent: fastUserContent(context, imgBlocks), useTools: true, maxSearches: MAX_SEARCHES })
       );
       const out = normalizeFast(extractJson(text));
+      if (gate.billed) out.credits = { balance: gate.balance, charged: gate.cost };
       log(`POST /api/analyze done (fast) in ${((Date.now() - t0) / 1000).toFixed(1)}s, ${out.sources.length} sources`);
       return res.json(out);
     }
@@ -593,8 +599,11 @@ app.post("/api/analyze", async (req, res) => {
     )) || {};
 
     log(`POST /api/analyze done (deep) in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-    res.json(mergeResult(scout, guru, spec, true));
+    const merged = mergeResult(scout, guru, spec, true);
+    if (gate.billed) merged.credits = { balance: gate.balance, charged: gate.cost };
+    res.json(merged);
   } catch (err) {
+    await gate.refund();
     log(`POST /api/analyze ERROR in ${((Date.now() - t0) / 1000).toFixed(1)}s:`, String(err?.message || err));
     res.status(err?.status || 500).json({ error: "analyze_failed", detail: String(err?.message || err) });
   }
@@ -678,11 +687,15 @@ app.post("/api/analyze/stream", async (req, res) => {
   const t0 = Date.now();
   log(`POST /api/analyze/stream  item="${name || "(photo)"}" mode=${includeGuru ? "deep" : "fast"}`);
 
+  // Metering gate (no-op unless billing is enabled). Debits up front; refunds on failure/abort.
+  const gate = await openGate(req, includeGuru ? "deep" : "fast");
+  if (!gate.ok) { sse(res, { t: "error", error: gate.error, balance: gate.balance, cost: gate.cost }); return res.end(); }
+
   // Detect a real client disconnect. NOTE: req "close" fires once the request
   // BODY is fully read (always, immediately), so we must watch the RESPONSE
   // socket closing before it finished instead.
   let aborted = false;
-  res.on("close", () => { if (!res.writableEnded) aborted = true; });
+  res.on("close", () => { if (!res.writableEnded) { aborted = true; gate.refund(); } });
 
   // heartbeat so proxies/browsers don't drop the connection during long thinking gaps
   const hb = setInterval(() => { try { res.write(": ping\n\n"); } catch {} }, 10000);
@@ -695,6 +708,7 @@ app.post("/api/analyze/stream", async (req, res) => {
       if (aborted) { clearInterval(hb); return res.end(); }
       sse(res, { t: "phase", phase: "scout", status: "done" });
       const out = normalizeFast(extractJson(text));
+      if (gate.billed) out.credits = { balance: gate.balance, charged: gate.cost };
       log(`stream done (fast) in ${((Date.now() - t0) / 1000).toFixed(1)}s, ${out.sources.length} sources`);
       sse(res, { t: "done", data: out });
       clearInterval(hb);
@@ -722,8 +736,11 @@ app.post("/api/analyze/stream", async (req, res) => {
     const spec = extractJson(specText) || {};
 
     log(`stream done (deep) in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-    sse(res, { t: "done", data: mergeResult(scout, guru, spec, true) });
+    const merged = mergeResult(scout, guru, spec, true);
+    if (gate.billed) merged.credits = { balance: gate.balance, charged: gate.cost };
+    sse(res, { t: "done", data: merged });
   } catch (err) {
+    await gate.refund();
     log(`stream ERROR in ${((Date.now() - t0) / 1000).toFixed(1)}s:`, String(err?.message || err));
     sse(res, { t: "error", error: "analyze_failed", detail: String(err?.message || err) });
   }
@@ -821,6 +838,9 @@ app.post("/api/reviews", async (req, res) => {
   const t0 = Date.now();
   log(`POST /api/reviews item="${itemName}"`);
 
+  const gate = await openGate(req, "reviews");
+  if (!gate.ok) return res.status(gate.status).json({ error: gate.error, balance: gate.balance, cost: gate.cost });
+
   try {
     const prompt = guruPrompt(`Item: ${itemName}`, { product: product || { name: itemName } });
     const text = await timed("guru-ondemand", () =>
@@ -828,8 +848,11 @@ app.post("/api/reviews", async (req, res) => {
     );
     const guru = extractJson(text) || {};
     log(`POST /api/reviews done in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-    res.json({ quality: guru.quality || null, reviewSources: sanitizeReviewSources(guru.reviewSources) });
+    const out = { quality: guru.quality || null, reviewSources: sanitizeReviewSources(guru.reviewSources) };
+    if (gate.billed) out.credits = { balance: gate.balance, charged: gate.cost };
+    res.json(out);
   } catch (err) {
+    await gate.refund();
     log(`POST /api/reviews ERROR in ${((Date.now() - t0) / 1000).toFixed(1)}s:`, String(err?.message || err));
     res.status(err?.status || 500).json({ error: "reviews_failed", detail: String(err?.message || err) });
   }
@@ -885,8 +908,22 @@ app.post("/api/refine", async (req, res) => {
   }
 });
 
+// ---------- /api/credits : the signed-in user's balance + pricing (billing mode only) ----------
+app.get("/api/credits", async (req, res) => {
+  const cfg = billingConfig();
+  if (!cfg.enabled) return res.json({ enabled: false, costs: cfg.costs });
+  const user = verifyToken(bearer(req));
+  if (!user) return res.status(401).json({ error: "unauthorized" });
+  try {
+    const balance = await getBalance(user.id);
+    res.json({ enabled: true, balance, costs: cfg.costs, freeCredits: cfg.freeCredits });
+  } catch (err) {
+    res.status(503).json({ error: "billing_unavailable", detail: String(err?.message || err) });
+  }
+});
+
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, model: MODEL, hasServerKey: !!process.env.ANTHROPIC_API_KEY });
+  res.json({ ok: true, model: MODEL, hasServerKey: !!process.env.ANTHROPIC_API_KEY, billing: billingEnabled() });
 });
 app.listen(PORT, () => {
   console.log(`Gun Show Deal Finder running on http://localhost:${PORT}`);

@@ -27,12 +27,15 @@ so that heavy usage becomes our best revenue instead of a margin liability.
 |---|---|
 | Fast lookup (`/api/analyze`, default) | 1 |
 | Deep dive (`deep:true`, 3 agents) | 4 |
+| On-demand reviews (`/api/reviews`) | 2 |
 | Chat (`/api/chat`) | 0 (free) |
 | Re-identify (`/api/identify`) | 0 (free) |
 | Refine (`/api/refine`) | 0 (free) |
 
-Chat / identify / refine are free because they run on `LIGHT_MODEL` (Haiku) and are cheap. Only the
-Sonnet pricing/quality brain (Fast and Deep) costs credits.
+Chat / identify / refine are free because they run on `LIGHT_MODEL` (Haiku) and are cheap. The Sonnet
+pricing/quality brain costs credits: Fast (1) and Deep (4). On-demand reviews runs the Gun Guru alone
+(Sonnet + web search) so it costs 2. All costs live in one place (`CREDIT_COSTS` in `lib/billing.js`,
+each overridable via `COST_FAST` / `COST_DEEP` / `COST_REVIEWS`) so they're easy to re-tune.
 
 ### Top-up packs (consumable IAP)
 
@@ -79,3 +82,32 @@ The previously-sketched single `usage` row becomes a **credit ledger**:
 
 Web PWA can ship first with Stripe for subscriptions/top-ups; iOS/Android use store IAP via
 RevenueCat. The ledger and 402 flow are shared across both.
+
+## Implementation status
+
+**Done (steps 1–3, backend):**
+- `db/schema.sql` — `profiles` (two buckets: `monthly_credits`, `topup_credits`) + append-only
+  `credit_ledger`, with RLS and the RPC functions: `ensure_profile`, `credits_balance`,
+  `spend_credits` (monthly-first, then topup, atomic), `grant_credits` (idempotent on
+  `(user, kind, ref)`), `reset_monthly` (subscription renewal).
+- `lib/billing.js` — dependency-free: local HS256 verification of the Supabase access token
+  (`node:crypto`), PostgREST RPC over `fetch` with the service-role key, and `openGate(req, action)`
+  — the metering gate. Debits up front and returns a `refund()` the endpoint calls on failure.
+- `server.js` — gates on `/api/analyze`, `/api/analyze/stream` (SSE error), and `/api/reviews`;
+  refunds on error and on stream abort. New `GET /api/credits` (balance + pricing). `/api/health`
+  reports `billing`. Successful responses carry `credits: { balance, charged }`.
+
+**Off by default.** Billing activates only when `BILLING_ENABLED` is truthy AND `SUPABASE_URL` +
+`SUPABASE_SERVICE_KEY` + `SUPABASE_JWT_SECRET` are set. Otherwise every gate is a no-op and the
+existing BYO-Anthropic-key flow is unchanged. When the ledger is unreachable the gate **fails
+closed** (503) rather than giving away paid work.
+
+Env (server-only): `BILLING_ENABLED`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_JWT_SECRET`,
+`FREE_CREDITS` (default 3), `COST_FAST` / `COST_DEEP` / `COST_REVIEWS`.
+
+**Client contract:** when billing is on, the app sends the Supabase access token as
+`Authorization: Bearer <jwt>`; on `402 insufficient_credits` (or SSE `{t:"error", error:"insufficient_credits"}`)
+it shows the top-up sheet using the returned `balance` + `cost`.
+
+**Not yet (later steps):** RevenueCat webhook wiring (`grant_credits` / `reset_monthly` are ready
+for it), the client auth + top-up UI, Capacitor wrap, App Review.

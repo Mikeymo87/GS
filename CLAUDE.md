@@ -54,7 +54,19 @@ proxy/browser idle timeout; the client auto-falls back from streaming to `/api/a
 - `POST /api/analyze/stream` — SSE live view (reasoning + searches). Same body. Heartbeat every 10s.
 - `POST /api/chat` — `{ message, history, item, recentSearches }` → `{ html }` (clean HTML, sanitized client-side).
 - `POST /api/refine` — `{ name, condition, askingPrice, details, product, history }` → `{ changed, name, condition, askingPrice, details, changes[] }`. Cheap extraction (no web search) that pulls new item details out of the chat so the user can re-run the search refined. Client threads `details` through `analyze()` → `buildContext()` and into `cacheKey`.
-- `GET /api/health` — `{ ok, model, hasServerKey }`.
+- `GET /api/credits` — billing mode only: `{ enabled, balance, costs, freeCredits }` for the signed-in
+  user (needs `Authorization: Bearer <supabase-jwt>`). Returns `{ enabled:false, costs }` when billing is off.
+- `GET /api/health` — `{ ok, model, hasServerKey, billing }`.
+
+## Billing layer (optional, OFF by default — see MONETIZATION.md)
+`lib/billing.js` + `db/schema.sql` add a Supabase credit ledger. It's a no-op unless `BILLING_ENABLED`
+is truthy AND `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` + `SUPABASE_JWT_SECRET` are set — so local/BYO-key
+runs are unaffected. When on: `openGate(req, action)` verifies the user's Supabase JWT (local HS256, no
+SDK), debits credits (`fast`=1, `deep`=4, `reviews`=2; identify/chat/refine free), and gates
+`/api/analyze`, `/api/analyze/stream`, `/api/reviews`. No token → 401; out of credits → **402
+`insufficient_credits`** (SSE `{t:"error"}`); ledger unreachable → **503 fail-closed**. Debits happen up
+front and are refunded on failure or stream abort. Success responses include `credits:{balance,charged}`.
+Apply `db/schema.sql` in Supabase before enabling. RevenueCat webhook is not wired yet.
 
 Smoke test:
 ```bash
