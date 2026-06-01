@@ -9,7 +9,8 @@ const FFL_STORE = "gsdf_ffl";
 const CACHE_STORE = "gsdf_cache";   // last 20 full results, keyed by search
 const CACHE_MAX = 20;
 
-let selectedImage = null; // data URL
+let selectedImages = []; // data URLs (up to 3) — front, markings, box label, etc.
+let selectedImage = null; // primary (= selectedImages[0]); kept for scanner/cache compatibility
 let scannedUPC = null;
 let identifying = false;
 let runController = null;
@@ -29,7 +30,7 @@ function loadImg(src) {
   });
 }
 
-async function fileToResizedDataUrl(file, maxDim = 1280, quality = 0.82) {
+async function fileToResizedDataUrl(file, maxDim = 1600, quality = 0.9) {
   const dataUrl = await new Promise((res, rej) => {
     const r = new FileReader();
     r.onload = () => res(r.result);
@@ -64,28 +65,47 @@ async function attemptBarcode(dataUrl) {
   } catch { return null; }
 }
 
+function renderThumbs() {
+  const wrap = $("thumbs");
+  wrap.innerHTML = selectedImages
+    .map((src, i) => `<div class="thumb-item"><img src="${src}" alt="photo ${i + 1}"/><button class="thumb-x" data-i="${i}" aria-label="Remove">✕</button></div>`)
+    .join("");
+  wrap.querySelectorAll(".thumb-x").forEach((b) => b.addEventListener("click", () => removePhoto(Number(b.dataset.i))));
+  $("thumbWrap").classList.toggle("hidden", selectedImages.length === 0);
+}
+
+function removePhoto(i) {
+  selectedImages.splice(i, 1);
+  selectedImage = selectedImages[0] || null;
+  renderThumbs();
+  if (!selectedImages.length) { $("idStatus").textContent = ""; $("idAlts").innerHTML = ""; }
+}
+
 async function onImageChosen(file, opts = {}) {
-  if (!file) return;
-  try {
-    selectedImage = await fileToResizedDataUrl(file);
-  } catch {
-    selectedImage = null;
-    return;
+  const files = Array.isArray(file) ? file : [file];
+  let added = null;
+  for (const f of files) {
+    if (!f) continue;
+    if (selectedImages.length >= 3) { toast("Max 3 photos"); break; }
+    try { added = await fileToResizedDataUrl(f); selectedImages.push(added); } catch { /* skip */ }
   }
-  $("thumb").src = selectedImage;
-  $("thumbWrap").classList.remove("hidden");
+  if (!selectedImages.length) return;
+  selectedImage = selectedImages[0];
+  renderThumbs();
   $("idStatus").textContent = opts.barcode ? "🔖 Reading barcode…" : "";
-  scannedUPC = null;
-  if (opts.barcode) {
-    scannedUPC = await attemptBarcode(selectedImage);
+  if (opts.barcode && added) {
+    scannedUPC = await attemptBarcode(added);
     if (scannedUPC) $("idStatus").textContent = `🔖 UPC ${scannedUPC} — identifying…`;
   }
   identify();
 }
 
 function clearImage() {
+  selectedImages = [];
   selectedImage = null;
   scannedUPC = null;
+  $("thumbs").innerHTML = "";
+  $("idAlts").innerHTML = "";
   $("thumbWrap").classList.add("hidden");
   $("cameraInput").value = "";
   $("galleryInput").value = "";
@@ -153,9 +173,10 @@ function onScanned(code, video) {
     c.width = video.videoWidth || 640;
     c.height = video.videoHeight || 480;
     c.getContext("2d").drawImage(video, 0, 0);
-    selectedImage = c.toDataURL("image/jpeg", 0.8);
-    $("thumb").src = selectedImage;
-    $("thumbWrap").classList.remove("hidden");
+    const snap = c.toDataURL("image/jpeg", 0.85);
+    if (selectedImages.length < 3) selectedImages.push(snap);
+    selectedImage = selectedImages[0] || snap;
+    renderThumbs();
   } catch {}
   scannedUPC = code;
   closeScanner();
@@ -210,14 +231,15 @@ function apiHeaders() {
 }
 
 async function identify() {
-  if ((!selectedImage && !scannedUPC) || identifying) return;
+  if ((!selectedImages.length && !scannedUPC) || identifying) return;
   identifying = true;
+  $("idAlts").innerHTML = "";
   if (!$("idStatus").textContent) $("idStatus").textContent = "🔎 Identifying…";
   try {
     const r = await fetch("/api/identify", {
       method: "POST",
       headers: apiHeaders(),
-      body: JSON.stringify({ image: selectedImage, upc: scannedUPC }),
+      body: JSON.stringify({ images: selectedImages, image: selectedImages[0] || null, upc: scannedUPC }),
     });
     if (r.status === 401) {
       $("idStatus").textContent = "⚠️ Add your API key in ⚙️";
@@ -227,10 +249,12 @@ async function identify() {
     const data = await r.json();
     if (data && data.name) {
       if (!$("nameInput").value.trim()) $("nameInput").value = data.name;
+      toggleClearName();
       if (data.upc && !scannedUPC) scannedUPC = data.upc;
       const conf = data.confidence ? ` · ${data.confidence} confidence` : "";
       $("idStatus").textContent = `✓ ${data.name}${conf}`;
       if (data.observedPrice && !$("priceInput").value) $("priceInput").value = data.observedPrice;
+      renderIdAlts(data.alternatives);
     } else {
       $("idStatus").textContent = "Couldn't ID it — type the name";
     }
@@ -239,6 +263,22 @@ async function identify() {
   } finally {
     identifying = false;
   }
+}
+
+// Tappable "not quite? pick the exact match" chips from identify alternatives.
+function renderIdAlts(alts) {
+  const el = $("idAlts");
+  if (!Array.isArray(alts) || !alts.length) { el.innerHTML = ""; return; }
+  el.innerHTML = `<span class="alts-label">Not quite? Tap the exact match:</span>` +
+    alts.slice(0, 4).map((a) => `<button class="id-alt-chip">${esc(a)}</button>`).join("");
+  el.querySelectorAll(".id-alt-chip").forEach((b) =>
+    b.addEventListener("click", () => {
+      $("nameInput").value = b.textContent;
+      toggleClearName();
+      $("idStatus").textContent = `✓ ${b.textContent}`;
+      el.innerHTML = "";
+    })
+  );
 }
 
 /* ---------------- live activity feed ---------------- */
@@ -349,7 +389,8 @@ async function analyze() {
     name,
     askingPrice: $("priceInput").value || null,
     condition: $("conditionInput").value || null,
-    image: selectedImage || null,
+    image: selectedImages[0] || null,
+    images: selectedImages.length ? selectedImages : null,
     upc: scannedUPC || null,
     deep: $("deepToggle").checked,
     details: pendingDetails || null,
@@ -981,10 +1022,10 @@ function hideFormError() { $("formError").classList.add("hidden"); }
 /* ---------------- wire up ---------------- */
 $("cameraInput").addEventListener("change", (e) => onImageChosen(e.target.files[0]));
 $("barcodeInput").addEventListener("change", (e) => onImageChosen(e.target.files[0], { barcode: true }));
-$("galleryInput").addEventListener("change", (e) => onImageChosen(e.target.files[0]));
+$("galleryInput").addEventListener("change", (e) => onImageChosen([...e.target.files]));
 $("scanBtn").addEventListener("click", openScanner);
 $("scanClose").addEventListener("click", closeScanner);
-$("clearThumb").addEventListener("click", clearImage);
+$("clearThumb")?.addEventListener("click", clearImage);
 $("analyzeBtn").addEventListener("click", analyze);
 $("cancelRun").addEventListener("click", stopRun);
 $("settingsBtn").addEventListener("click", openSettings);

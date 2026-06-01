@@ -12,6 +12,9 @@ app.use(express.static(path.join(__dirname, "public")));
 const PORT = process.env.PORT || 3000;
 const MODEL = process.env.MODEL || "claude-sonnet-4-6";
 const LIGHT_MODEL = process.env.LIGHT_MODEL || "claude-haiku-4-5-20251001";
+// Vision/identify accuracy matters more than the small per-call savings (it runs
+// once per item), so default photo ID to the stronger model. Override with env.
+const VISION_MODEL = process.env.VISION_MODEL || MODEL;
 const WEB_SEARCH_TOOL = process.env.WEB_SEARCH_TOOL || "web_search_20250305";
 const MAX_SEARCHES = Number(process.env.MAX_SEARCHES || 4);
 const THINK_BUDGET = Number(process.env.THINK_BUDGET || 1200);
@@ -318,6 +321,14 @@ function dataUrlToImageBlock(dataUrl) {
   return { type: "image", source: { type: "base64", media_type: m[1], data: m[2] } };
 }
 
+// Accept a single `image` (legacy) and/or an `images` array; return up to 4 valid blocks.
+function imageBlocksFrom(body) {
+  const urls = [];
+  if (Array.isArray(body?.images)) urls.push(...body.images);
+  if (body?.image) urls.push(body.image);
+  return urls.map(dataUrlToImageBlock).filter(Boolean).slice(0, 4);
+}
+
 function validUrl(u) {
   try {
     const x = new URL(String(u));
@@ -382,10 +393,12 @@ function buildContext(body) {
   ].filter(Boolean).join("\n");
 }
 
-function scoutUserContent(context, imgBlock) {
-  const content = [];
-  if (imgBlock) content.push(imgBlock);
-  content.push({ type: "text", text: `${context}\n\nIdentify the item, search reputable stores, and return the market JSON with DIRECT product links.` });
+function scoutUserContent(context, imgBlocks) {
+  const content = [...(imgBlocks || [])];
+  const photoNote = (imgBlocks && imgBlocks.length)
+    ? ` Use the ${imgBlocks.length} photo(s) to confirm the EXACT variant/configuration (generation, finish, barrel length, markings, included extras) before pricing.`
+    : "";
+  content.push({ type: "text", text: `${context}\n\nIdentify the item, search reputable stores, and return the market JSON with DIRECT product links.${photoNote}` });
   return content;
 }
 
@@ -429,10 +442,12 @@ function specialistPrompt(context, scout, guru, includeGuru) {
   ].join("\n");
 }
 
-function fastUserContent(context, imgBlock) {
-  const content = [];
-  if (imgBlock) content.push(imgBlock);
-  content.push({ type: "text", text: `${context}\n\nIdentify, price (with DIRECT links), rate the deal, and give a counter-offer. Return only the JSON object.` });
+function fastUserContent(context, imgBlocks) {
+  const content = [...(imgBlocks || [])];
+  const photoNote = (imgBlocks && imgBlocks.length)
+    ? ` Use the ${imgBlocks.length} photo(s) to confirm the EXACT variant/configuration (generation, finish, barrel length, markings, included extras) before pricing.`
+    : "";
+  content.push({ type: "text", text: `${context}\n\nIdentify, price (with DIRECT links), rate the deal, and give a counter-offer. Return only the JSON object.${photoNote}` });
   return content;
 }
 
@@ -476,33 +491,36 @@ function mergeResult(scout, guru, spec, includeGuru) {
 app.post("/api/identify", async (req, res) => {
   const client = clientFor(req);
   if (!client) return res.status(401).json({ error: "missing_key" });
-  const img = dataUrlToImageBlock(req.body?.image);
+  const imgs = imageBlocksFrom(req.body);
   const upc = (req.body?.upc || "").toString().trim();
-  if (!img && !upc) return res.status(400).json({ error: "no_image" });
+  if (!imgs.length && !upc) return res.status(400).json({ error: "no_image" });
   try {
-    const content = [];
-    if (img) content.push(img);
+    const content = [...imgs];
     content.push({
       type: "text",
       text:
+        (imgs.length > 1 ? `There are ${imgs.length} photos of the SAME item (e.g. profile, markings/roll-mark, box label) — combine them. ` : "") +
         (upc ? `Scanned UPC/barcode: ${upc}. Use it to identify the exact product. ` : "") +
         "Identify this item for a price search. Return only the JSON object.",
     });
     const message = await client.messages.create({
-      model: LIGHT_MODEL,
-      max_tokens: 600,
+      model: VISION_MODEL,
+      max_tokens: 700,
       system: cachedSystem(
-        "You are an expert at identifying anything firearms-related: complete firearms, " +
-        "AR-platform parts (uppers, lowers, barrels, BCGs, handguards), 1911/2011 and Glock parts, " +
-        "magazines, optics, lights, holsters, suppressors, and AMMUNITION. " +
-        "Identify the item as precisely as possible. If a UPC/barcode is provided or visible, read it and use it. " +
-        "For guns: make, model, caliber, generation/variant, barrel length, finish. For parts: brand, model/part " +
-        "number, fitment (e.g. AR-15 vs AR-10, Glock gen). For ammo: brand, caliber, grain weight, bullet type, " +
-        "ROUND COUNT. Read any visible tags, price stickers, box labels, or markings. " +
+        "You are a master firearms identifier (armorer + collector). Identify the EXACT item from the photo(s): " +
+        "complete firearms, AR/AK-platform parts (uppers, lowers, barrels, BCGs, handguards, triggers), 1911/2011 and " +
+        "Glock parts, magazines, optics, lights, holsters, suppressors, and AMMUNITION. " +
+        "Be exact and look closely at ROLL MARKS, slide/barrel engravings, proof/import marks, model numbers, and box labels — " +
+        "these disambiguate near-identical variants. For guns: make, model, caliber, generation/variant (e.g. Gen 3 vs 5, MOS, " +
+        "Magpul vs standard), barrel length, finish, sights, threaded vs not. For parts: brand, model/part number, fitment " +
+        "(AR-15 vs AR-10, Glock gen). For ammo: brand, caliber, grain weight, bullet type, ROUND COUNT. " +
+        "If a UPC/barcode is provided or visible, read it and prefer it. Do NOT guess beyond what the image supports — if a spec " +
+        "is unclear, omit it from name and lower confidence, and list realistic 'alternatives' the user can pick from. " +
         "Respond ONLY with a JSON object: " +
         '{ "name": "best single search string (brand model caliber/spec)", ' +
         '"category": "firearm|part|accessory|optic|magazine|ammo|other", ' +
-        '"confidence": "high|medium|low", "upc": string|null, "alternatives": ["other possible matches"], ' +
+        '"confidence": "high|medium|low", "upc": string|null, "alternatives": ["other plausible exact matches"], ' +
+        '"markings": "roll marks / engravings / import marks read", ' +
         '"observedPrice": number|null, "quantity": number|null, "notes": "what you see, incl. condition cues" }'
       ),
       messages: [{ role: "user", content }],
@@ -542,9 +560,9 @@ app.post("/api/analyze", async (req, res) => {
   const client = clientFor(req);
   if (!client) return res.status(401).json({ error: "missing_key" });
 
-  const { name, image, upc, deep } = req.body || {};
-  const imgBlock = image ? dataUrlToImageBlock(image) : null;
-  if (!name && !imgBlock && !upc) return res.status(400).json({ error: "need_name_or_image" });
+  const { name, upc, deep } = req.body || {};
+  const imgBlocks = imageBlocksFrom(req.body);
+  if (!name && !imgBlocks.length && !upc) return res.status(400).json({ error: "need_name_or_image" });
   const includeGuru = deep === true; // FAST is the default; deep (3-agent) is opt-in
   const context = buildContext(req.body);
   const t0 = Date.now();
@@ -554,7 +572,7 @@ app.post("/api/analyze", async (req, res) => {
     // ---- FAST: single agent does everything ----
     if (!includeGuru) {
       const text = await timed("fast", () =>
-        createPhase(client, { system: FAST_SOP, userContent: fastUserContent(context, imgBlock), useTools: true, maxSearches: MAX_SEARCHES })
+        createPhase(client, { system: FAST_SOP, userContent: fastUserContent(context, imgBlocks), useTools: true, maxSearches: MAX_SEARCHES })
       );
       const out = normalizeFast(extractJson(text));
       log(`POST /api/analyze done (fast) in ${((Date.now() - t0) / 1000).toFixed(1)}s, ${out.sources.length} sources`);
@@ -562,7 +580,7 @@ app.post("/api/analyze", async (req, res) => {
     }
 
     // ---- DEEP: Scout + Guru in PARALLEL, then Specialist ----
-    const scoutP = timed("scout", () => createPhase(client, { system: SCOUT_SOP, userContent: scoutUserContent(context, imgBlock), useTools: true }));
+    const scoutP = timed("scout", () => createPhase(client, { system: SCOUT_SOP, userContent: scoutUserContent(context, imgBlocks), useTools: true }));
     const guruP = timed("guru", () => createPhase(client, { system: GURU_SOP, userContent: [{ type: "text", text: guruPrompt(context, { product: { name } }) }], useTools: true }));
     const [scoutText, guruText] = await Promise.all([scoutP, guruP]);
     const scout = extractJson(scoutText) || {};
@@ -652,9 +670,9 @@ app.post("/api/analyze/stream", async (req, res) => {
   const client = clientFor(req);
   if (!client) { sse(res, { t: "error", error: "missing_key" }); return res.end(); }
 
-  const { name, image, upc, deep } = req.body || {};
-  const imgBlock = image ? dataUrlToImageBlock(image) : null;
-  if (!name && !imgBlock && !upc) { sse(res, { t: "error", error: "need_name_or_image" }); return res.end(); }
+  const { name, upc, deep } = req.body || {};
+  const imgBlocks = imageBlocksFrom(req.body);
+  if (!name && !imgBlocks.length && !upc) { sse(res, { t: "error", error: "need_name_or_image" }); return res.end(); }
   const includeGuru = deep === true; // FAST default; deep (3-agent) opt-in
   const context = buildContext(req.body);
   const t0 = Date.now();
@@ -673,7 +691,7 @@ app.post("/api/analyze/stream", async (req, res) => {
     // ---- FAST: one streamed agent ----
     if (!includeGuru) {
       sse(res, { t: "phase", phase: "scout", label: "Deal Finder", role: "Price + verdict", status: "start" });
-      const text = await runPhase(client, res, "scout", { system: FAST_SOP, userContent: fastUserContent(context, imgBlock), useTools: true });
+      const text = await runPhase(client, res, "scout", { system: FAST_SOP, userContent: fastUserContent(context, imgBlocks), useTools: true });
       if (aborted) { clearInterval(hb); return res.end(); }
       sse(res, { t: "phase", phase: "scout", status: "done" });
       const out = normalizeFast(extractJson(text));
@@ -685,7 +703,7 @@ app.post("/api/analyze/stream", async (req, res) => {
 
     // ---- DEEP: 3 agents, live ----
     sse(res, { t: "phase", phase: "scout", label: "The Scout", role: "Finds real prices", status: "start" });
-    const scoutText = await runPhase(client, res, "scout", { system: SCOUT_SOP, userContent: scoutUserContent(context, imgBlock), useTools: true });
+    const scoutText = await runPhase(client, res, "scout", { system: SCOUT_SOP, userContent: scoutUserContent(context, imgBlocks), useTools: true });
     if (aborted) { clearInterval(hb); return res.end(); }
     const scout = extractJson(scoutText) || {};
     scout.sources = sanitizeSources(scout.sources);

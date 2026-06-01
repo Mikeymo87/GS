@@ -44,14 +44,15 @@
         <label class="capture-btn" for="galleryInput">
           <span class="capture-emoji">🖼️</span>
           <span>Upload</span>
-          <input id="galleryInput" type="file" accept="image/*" hidden />
+          <input id="galleryInput" type="file" accept="image/*" multiple hidden />
         </label>
       </div>
 
       <div id="thumbWrap" class="thumb-wrap hidden">
-        <img id="thumb" alt="Selected item" />
-        <button id="clearThumb" class="thumb-clear" aria-label="Remove photo">✕</button>
+        <div id="thumbs" class="thumbs"></div>
+        <p class="photo-hint">Tip: add up to 3 — e.g. the gun, the roll-mark/serial, and the box label — for a sharper match.</p>
         <div id="idStatus" class="id-status"></div>
+        <div id="idAlts" class="id-alts"></div>
       </div>
 
       <div class="field">
