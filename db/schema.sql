@@ -143,19 +143,30 @@ begin
 end; $$;
 
 -- Reset the monthly bucket to a tier's allotment (use-it-or-lose-it). Called on subscription
--- renewal. Sets the bucket (does not add) and stamps the next reset. Returns {ok, balance}.
-create or replace function public.reset_monthly(p_user uuid, p_amount integer, p_tier text)
+-- renewal/purchase. Sets the bucket (does not add) and stamps the next reset. Idempotent on
+-- (user, 'monthly', p_ref) so replayed webhook deliveries are harmless. Returns {ok, balance, applied}.
+drop function if exists public.reset_monthly(uuid, integer, text);
+create or replace function public.reset_monthly(p_user uuid, p_amount integer, p_tier text, p_ref text)
 returns json language plpgsql security definer set search_path = public as $$
 declare new_bal integer;
 begin
+  if p_ref is not null and exists (
+    select 1 from public.credit_ledger
+     where user_id = p_user and kind = 'monthly' and ref = p_ref
+  ) then
+    return json_build_object('ok', true, 'balance', public.credits_balance(p_user), 'applied', false);
+  end if;
   update public.profiles
      set monthly_credits  = greatest(coalesce(p_amount, 0), 0),
          tier             = coalesce(p_tier, tier),
          monthly_reset_at = now() + interval '1 month',
          updated_at       = now()
    where id = p_user;
+  if not found then
+    return json_build_object('ok', false, 'reason', 'no_profile', 'balance', 0, 'applied', false);
+  end if;
   select monthly_credits + topup_credits into new_bal from public.profiles where id = p_user;
   insert into public.credit_ledger (user_id, kind, amount, action, ref, balance_after)
-  values (p_user, 'monthly', greatest(coalesce(p_amount,0),0), 'reset', null, coalesce(new_bal,0));
-  return json_build_object('ok', new_bal is not null, 'balance', coalesce(new_bal,0));
+  values (p_user, 'monthly', greatest(coalesce(p_amount,0),0), 'reset', p_ref, coalesce(new_bal,0));
+  return json_build_object('ok', true, 'balance', coalesce(new_bal,0), 'applied', true);
 end; $$;

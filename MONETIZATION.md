@@ -97,17 +97,36 @@ RevenueCat. The ledger and 402 flow are shared across both.
   refunds on error and on stream abort. New `GET /api/credits` (balance + pricing). `/api/health`
   reports `billing`. Successful responses carry `credits: { balance, charged }`.
 
+**Done (step 4, RevenueCat webhook):**
+- `POST /api/webhooks/revenuecat` — authenticated by the dashboard shared secret sent as
+  `Authorization: Bearer <REVENUECAT_WEBHOOK_SECRET>` (timing-safe compare; unset secret ⇒ every
+  call 401s). Body is `{ api_version, event }`. Idempotent on `event.id`.
+- Event mapping (`handleWebhookEvent` in `lib/billing.js`): `NON_RENEWING_PURCHASE` → top-up grant;
+  `INITIAL_PURCHASE` / `RENEWAL` / `PRODUCT_CHANGE` / `UNCANCELLATION` / `SUBSCRIPTION_EXTENDED` →
+  `reset_monthly` to the tier allotment; `EXPIRATION` → monthly 0 + tier `free` (purchased top-ups
+  untouched); `CANCELLATION` / `BILLING_ISSUE` / `SUBSCRIPTION_PAUSED` → no-op (access persists to
+  expiration); `TEST` → 200.
+- `app_user_id` **must** be the Supabase user UUID — the client calls `Purchases.logIn(supabaseUserId)`.
+  Non-UUID / unknown users are acked `200` (no retry); Supabase infra errors return `500` (retry).
+- Product→grant map is configurable via `RC_PRODUCT_MAP` (JSON keyed by store `product_id`); the
+  defaults are placeholders aligned with the tiers above — set them to your real store identifiers.
+
+**AI-API safety:** in billing mode `clientFor` ignores any client-supplied `x-anthropic-key` and uses
+only the server key, so the credit ledger is the sole gate — a request can't run on a foreign key
+while we debit credits, and BYO-key can't bypass metering. (BYO-key still works when billing is off.)
+
 **Off by default.** Billing activates only when `BILLING_ENABLED` is truthy AND `SUPABASE_URL` +
 `SUPABASE_SERVICE_KEY` + `SUPABASE_JWT_SECRET` are set. Otherwise every gate is a no-op and the
 existing BYO-Anthropic-key flow is unchanged. When the ledger is unreachable the gate **fails
 closed** (503) rather than giving away paid work.
 
 Env (server-only): `BILLING_ENABLED`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_JWT_SECRET`,
-`FREE_CREDITS` (default 3), `COST_FAST` / `COST_DEEP` / `COST_REVIEWS`.
+`FREE_CREDITS` (default 3), `COST_FAST` / `COST_DEEP` / `COST_REVIEWS`, `REVENUECAT_WEBHOOK_SECRET`,
+`RC_PRODUCT_MAP` (JSON).
 
 **Client contract:** when billing is on, the app sends the Supabase access token as
 `Authorization: Bearer <jwt>`; on `402 insufficient_credits` (or SSE `{t:"error", error:"insufficient_credits"}`)
 it shows the top-up sheet using the returned `balance` + `cost`.
 
-**Not yet (later steps):** RevenueCat webhook wiring (`grant_credits` / `reset_monthly` are ready
-for it), the client auth + top-up UI, Capacitor wrap, App Review.
+**Not yet (later steps):** the client side — Supabase auth UI, sending the `Authorization` bearer,
+`Purchases.logIn(supabaseUserId)`, and the `402` → top-up sheet; then Capacitor wrap + App Review.

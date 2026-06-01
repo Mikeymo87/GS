@@ -66,7 +66,13 @@ SDK), debits credits (`fast`=1, `deep`=4, `reviews`=2; identify/chat/refine free
 `/api/analyze`, `/api/analyze/stream`, `/api/reviews`. No token → 401; out of credits → **402
 `insufficient_credits`** (SSE `{t:"error"}`); ledger unreachable → **503 fail-closed**. Debits happen up
 front and are refunded on failure or stream abort. Success responses include `credits:{balance,charged}`.
-Apply `db/schema.sql` in Supabase before enabling. RevenueCat webhook is not wired yet.
+In billing mode `clientFor` ignores the client `x-anthropic-key` and uses ONLY the server key, so the
+ledger is the sole gate (BYO-key still works when billing is off). Apply `db/schema.sql` first.
+`POST /api/webhooks/revenuecat` refills credits: auth via `REVENUECAT_WEBHOOK_SECRET` (Bearer,
+timing-safe), body `{api_version,event}`, idempotent on `event.id`. `NON_RENEWING_PURCHASE`→top-up;
+`INITIAL_PURCHASE`/`RENEWAL`/`PRODUCT_CHANGE`/`UNCANCELLATION`/`SUBSCRIPTION_EXTENDED`→`reset_monthly`;
+`EXPIRATION`→free. `app_user_id` must be the Supabase UUID (client `Purchases.logIn(uuid)`); map
+products via `RC_PRODUCT_MAP` (JSON). Unknown user→200 ack; ledger down→500 (RC retries).
 
 Smoke test:
 ```bash

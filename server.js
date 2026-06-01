@@ -2,7 +2,7 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Anthropic from "@anthropic-ai/sdk";
-import { openGate, billingEnabled, billingConfig, verifyToken, bearer, getBalance } from "./lib/billing.js";
+import { openGate, billingEnabled, billingConfig, verifyToken, bearer, getBalance, verifyWebhookSecret, handleWebhookEvent } from "./lib/billing.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -46,8 +46,11 @@ async function timed(label, fn) {
 // Resolve the Anthropic API key. Priority:
 //   1. Per-request key from the app's Settings (sent as a header, saved on the device)
 //   2. ANTHROPIC_API_KEY from the server environment
+// SAFETY: in billing mode we IGNORE the client-supplied key and use only the server key, so the
+// credit ledger is the single source of truth for access — a request can never run on a foreign
+// key while we debit credits, and BYO-key can't bypass metering.
 function clientFor(req) {
-  const headerKey = req.get("x-anthropic-key");
+  const headerKey = billingEnabled() ? null : req.get("x-anthropic-key");
   const apiKey = (headerKey && headerKey.trim()) || process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
   return new Anthropic({ apiKey });
@@ -919,6 +922,25 @@ app.get("/api/credits", async (req, res) => {
     res.json({ enabled: true, balance, costs: cfg.costs, freeCredits: cfg.freeCredits });
   } catch (err) {
     res.status(503).json({ error: "billing_unavailable", detail: String(err?.message || err) });
+  }
+});
+
+// ---------- /api/webhooks/revenuecat : refill monthly bucket / credit top-ups ----------
+// RevenueCat POSTs { api_version, event }. Auth is the dashboard-configured shared secret sent as
+// `Authorization: Bearer <secret>`. Idempotent on event.id. 2xx = handled (no retry); 5xx = retry.
+app.post("/api/webhooks/revenuecat", async (req, res) => {
+  if (!billingEnabled()) return res.status(404).json({ error: "billing_disabled" });
+  if (!verifyWebhookSecret(req)) return res.status(401).json({ error: "unauthorized" });
+  const event = req.body && req.body.event;
+  if (!event || typeof event !== "object") return res.status(400).json({ error: "bad_payload" });
+  try {
+    const r = await handleWebhookEvent(event);
+    log(`RC webhook ${event.type} user=${event.app_user_id || "?"} -> ${r.applied ? `applied (bal=${r.balance})` : r.reason}`);
+    res.json({ ok: true, ...r });
+  } catch (err) {
+    // Infra error (ledger unreachable): 5xx so RevenueCat retries with backoff.
+    log("RC webhook ERROR:", String(err?.message || err));
+    res.status(500).json({ error: "webhook_failed" });
   }
 });
 
